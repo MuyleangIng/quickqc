@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(QuickQC VERSION 0.1.4 LANGUAGES CXX)
+project(QuickQC VERSION 0.1.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,7 +52,6 @@ if(APPLE)
     qt_generate_deploy_app_script(
         TARGET quickqc
         OUTPUT_SCRIPT quickqc_deploy_script
-        EXCLUDE_PLUGINS qsqlmimer
         NO_UNSUPPORTED_PLATFORM_ERROR
     )
     install(SCRIPT ${quickqc_deploy_script})

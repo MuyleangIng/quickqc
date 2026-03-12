@@ -4,6 +4,13 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.1.5] - 2026-03-12
+
+### Fixed
+
+- Removed unsupported `EXCLUDE_PLUGINS` argument for Qt 6.7.3 deployment script generation.
+- Keeps the improved macOS bundle verification and packaging flow from prior fixes.
+
 ## [0.1.4] - 2026-03-12
 
 ### Fixed
