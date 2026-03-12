@@ -147,16 +147,19 @@ QuickQC stores data in your OS app-data directory with:
 - app name: `quickqc`
 - DB file: `quickqc.sqlite`
 
-## Release Tag
+## Release Process
 
-Recommended first release tag:
+Before tagging, add a matching section to `CHANGELOG.md` (for example `## [0.2.2] - YYYY-MM-DD`).
+Release notes are generated automatically from that section.
+
+Example tag:
 
 ```bash
-git tag -a 0.1.0 -m "QuickQC 0.1.0"
-git push origin 0.1.0
+git tag -a 0.2.2 -m "QuickQC 0.2.2"
+git push origin 0.2.2
 ```
 
-Pushing tag `0.1.0` triggers GitHub Actions to build and attach release artifacts for:
+Pushing a tag triggers GitHub Actions to build and attach release artifacts for:
 
 - macOS (AMD64 + ARM64)
 - Windows (AMD64 + ARM64)

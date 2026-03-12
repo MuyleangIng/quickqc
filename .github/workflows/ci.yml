@@ -312,6 +312,11 @@ jobs:
           path: dist-artifacts
           merge-multiple: true
 
+      - name: Generate release notes from changelog
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          ./scripts/generate-release-notes.sh "$TAG_NAME" CHANGELOG.md .github/release-notes.generated.md
+
       - name: Publish GitHub Release (official gh CLI)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -320,4 +325,4 @@ jobs:
           gh release view "$TAG_NAME" >/dev/null 2>&1 && gh release delete "$TAG_NAME" --yes || true
           gh release create "$TAG_NAME" dist-artifacts/* \
             --title "QuickQC $TAG_NAME" \
-            --notes-file .github/release-notes.md
+            --notes-file .github/release-notes.generated.md
