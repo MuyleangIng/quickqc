@@ -4,6 +4,19 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.1.9] - 2026-03-12
+
+### Fixed
+
+- Update-check dialog now closes reliably from both the `Close` button and window close (`X`) button.
+- Stopped the updater UI from appearing as a duplicate embedded sheet; update check now uses a normal standalone modal flow.
+- Settings window now opens in front more consistently and behaves as a normal closable modal dialog.
+
+### Added
+
+- macOS in-app updater flow now downloads and stages the correct release artifact directly, without opening the website.
+- After download, updater now offers `Restart Now` (apply immediately) or `Later` (apply automatically when QuickQC exits).
+
 ## [0.1.8] - 2026-03-12
 
 ### Changed

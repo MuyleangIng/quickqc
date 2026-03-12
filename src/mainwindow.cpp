@@ -21,6 +21,7 @@
 #include <QDoubleSpinBox>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileDevice>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
@@ -28,6 +29,7 @@
 #include <QHash>
 #include <QHBoxLayout>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -48,6 +50,7 @@
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressBar>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
@@ -56,6 +59,7 @@
 #include <QShortcut>
 #include <QStyle>
 #include <QSurfaceFormat>
+#include <QSysInfo>
 #include <QSystemTrayIcon>
 #include <QTextStream>
 #include <QTimer>
@@ -64,6 +68,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QUuid>
 
 #include <algorithm>
 
@@ -124,14 +129,334 @@ int compareVersions(const QString& lhsRaw, const QString& rhsRaw) {
   return 0;
 }
 
-bool restartApplication() {
-  const QString appPath = QCoreApplication::applicationFilePath();
-  const QStringList args = QCoreApplication::arguments().mid(1);
-  if (!QProcess::startDetached(appPath, args)) {
+QString releaseAssetNameForCurrentPlatform() {
+#if defined(Q_OS_MAC)
+  const QString arch = QSysInfo::currentCpuArchitecture().toLower();
+  if (arch.contains(QStringLiteral("arm")) || arch.contains(QStringLiteral("aarch64"))) {
+    return QStringLiteral("quickqc-macos-arm64.tar.gz");
+  }
+  return QStringLiteral("quickqc-macos-amd64.tar.gz");
+#else
+  return QString();
+#endif
+}
+
+QString releaseAssetUrlForCurrentPlatform(const QJsonObject& releaseObject) {
+  const QString expectedName = releaseAssetNameForCurrentPlatform();
+  if (expectedName.isEmpty()) {
+    return QString();
+  }
+
+  const QJsonArray assets = releaseObject.value(QStringLiteral("assets")).toArray();
+  for (const QJsonValue& value : assets) {
+    const QJsonObject asset = value.toObject();
+    const QString name = asset.value(QStringLiteral("name")).toString().trimmed();
+    if (name == expectedName) {
+      return asset.value(QStringLiteral("browser_download_url")).toString().trimmed();
+    }
+  }
+
+  return QString();
+}
+
+bool downloadFileWithProgress(
+    QWidget* parent,
+    const QUrl& url,
+    const QString& userAgent,
+    const QString& outputPath,
+    QString* errorMessage) {
+  if (!url.isValid()) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Invalid update download URL.");
+    }
     return false;
   }
-  qApp->quit();
+
+  QFile output(outputPath);
+  if (!output.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to create update file at %1.").arg(outputPath);
+    }
+    return false;
+  }
+
+  QNetworkAccessManager manager;
+  QNetworkRequest request(url);
+  request.setHeader(QNetworkRequest::UserAgentHeader, userAgent);
+  request.setRawHeader("Accept", "application/octet-stream");
+
+  QNetworkReply* reply = manager.get(request);
+  QProgressDialog progress(
+      QStringLiteral("Downloading update package..."),
+      QStringLiteral("Cancel"),
+      0,
+      100,
+      parent);
+  progress.setWindowTitle(QStringLiteral("Updating QuickQC"));
+  progress.setWindowModality(Qt::ApplicationModal);
+  progress.setMinimumDuration(0);
+  progress.setAutoClose(false);
+  progress.setAutoReset(false);
+  progress.setValue(0);
+
+  QEventLoop loop;
+  QTimer timeoutTimer(parent);
+  timeoutTimer.setSingleShot(true);
+  timeoutTimer.setInterval(180000);
+
+  bool canceled = false;
+  bool timedOut = false;
+
+  QObject::connect(&progress, &QProgressDialog::canceled, parent, [reply, &canceled]() {
+    canceled = true;
+    if (reply && reply->isRunning()) {
+      reply->abort();
+    }
+  });
+  QObject::connect(&timeoutTimer, &QTimer::timeout, parent, [reply, &timedOut]() {
+    timedOut = true;
+    if (reply && reply->isRunning()) {
+      reply->abort();
+    }
+  });
+  QObject::connect(reply, &QNetworkReply::readyRead, parent, [reply, &output]() {
+    const QByteArray data = reply->readAll();
+    if (!data.isEmpty()) {
+      output.write(data);
+    }
+  });
+  QObject::connect(reply, &QNetworkReply::downloadProgress, parent, [&progress](const qint64 received, const qint64 total) {
+    if (total > 0) {
+      progress.setRange(0, 100);
+      progress.setValue(static_cast<int>((received * 100) / total));
+      return;
+    }
+    progress.setRange(0, 0);
+  });
+  QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+  timeoutTimer.start();
+  progress.show();
+  loop.exec();
+
+  const QByteArray remaining = reply->readAll();
+  if (!remaining.isEmpty()) {
+    output.write(remaining);
+  }
+
+  output.flush();
+  output.close();
+  progress.close();
+
+  const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+  const QNetworkReply::NetworkError networkError = reply->error();
+  reply->deleteLater();
+
+  if (canceled) {
+    QFile::remove(outputPath);
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Update download canceled.");
+    }
+    return false;
+  }
+
+  if (networkError != QNetworkReply::NoError) {
+    QFile::remove(outputPath);
+    if (errorMessage) {
+      if (timedOut || networkError == QNetworkReply::TimeoutError) {
+        *errorMessage = QStringLiteral("Update download timed out.");
+      } else if (statusCode >= 500) {
+        *errorMessage = QStringLiteral("Server unavailable while downloading update.");
+      } else {
+        *errorMessage = QStringLiteral("Failed to download update package.");
+      }
+    }
+    return false;
+  }
+
   return true;
+}
+
+bool extractArchiveToDirectory(const QString& archivePath, const QString& destinationDir, QString* errorMessage) {
+  QProcess tar;
+  tar.start(
+      QStringLiteral("tar"),
+      {QStringLiteral("-xzf"), archivePath, QStringLiteral("-C"), destinationDir});
+
+  if (!tar.waitForStarted(3000)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to start archive extraction.");
+    }
+    return false;
+  }
+
+  if (!tar.waitForFinished(180000)) {
+    tar.kill();
+    tar.waitForFinished();
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Timed out while extracting update package.");
+    }
+    return false;
+  }
+
+  if (tar.exitStatus() != QProcess::NormalExit || tar.exitCode() != 0) {
+    if (errorMessage) {
+      const QString stderrOut = QString::fromUtf8(tar.readAllStandardError()).trimmed();
+      *errorMessage = stderrOut.isEmpty()
+                          ? QStringLiteral("Failed to extract update package.")
+                          : stderrOut;
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool stageMacUpdate(
+    QWidget* parent,
+    const QString& assetUrl,
+    const QString& userAgent,
+    QString* stagedAppPath,
+    QString* errorMessage) {
+#if !defined(Q_OS_MAC)
+  Q_UNUSED(parent);
+  Q_UNUSED(assetUrl);
+  Q_UNUSED(userAgent);
+  Q_UNUSED(stagedAppPath);
+  if (errorMessage) {
+    *errorMessage = QStringLiteral("Automatic update installation is supported on macOS only.");
+  }
+  return false;
+#else
+  const QString stagingRoot = QDir::temp().filePath(
+      QStringLiteral("quickqc-update-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+  if (!QDir().mkpath(stagingRoot)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to create update staging directory.");
+    }
+    return false;
+  }
+
+  const QString archivePath = QDir(stagingRoot).filePath(QStringLiteral("quickqc-update.tar.gz"));
+  if (!downloadFileWithProgress(parent, QUrl(assetUrl), userAgent, archivePath, errorMessage)) {
+    return false;
+  }
+
+  const QString extractDir = QDir(stagingRoot).filePath(QStringLiteral("extract"));
+  if (!QDir().mkpath(extractDir)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to prepare extracted update folder.");
+    }
+    return false;
+  }
+
+  if (!extractArchiveToDirectory(archivePath, extractDir, errorMessage)) {
+    return false;
+  }
+
+  const QString appPath = QDir(extractDir).filePath(QStringLiteral("quickqc.app"));
+  const QFileInfo appInfo(appPath);
+  if (!appInfo.exists() || !appInfo.isDir()) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Downloaded package does not contain quickqc.app.");
+    }
+    return false;
+  }
+
+  if (stagedAppPath) {
+    *stagedAppPath = appPath;
+  }
+  return true;
+#endif
+}
+
+bool launchMacInstallHelper(const QString& stagedAppPath, const bool relaunchAfterInstall, QString* errorMessage) {
+#if !defined(Q_OS_MAC)
+  Q_UNUSED(stagedAppPath);
+  Q_UNUSED(relaunchAfterInstall);
+  if (errorMessage) {
+    *errorMessage = QStringLiteral("Automatic update installation is supported on macOS only.");
+  }
+  return false;
+#else
+  const QFileInfo appInfo(stagedAppPath);
+  if (!appInfo.exists() || !appInfo.isDir()) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Staged update app is missing.");
+    }
+    return false;
+  }
+
+  const QString scriptPath = QDir(appInfo.absolutePath()).filePath(QStringLiteral("quickqc-install-update.sh"));
+  QFile script(scriptPath);
+  if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to write update installer helper.");
+    }
+    return false;
+  }
+
+  QTextStream out(&script);
+  out << "#!/bin/sh\n";
+  out << "set -eu\n";
+  out << "PID=\"$1\"\n";
+  out << "SRC_APP=\"$2\"\n";
+  out << "RELAUNCH=\"$3\"\n";
+  out << "install_to() {\n";
+  out << "  DEST=\"$1\"\n";
+  out << "  DEST_NEW=\"${DEST}.new\"\n";
+  out << "  mkdir -p \"$(dirname \"$DEST\")\"\n";
+  out << "  rm -rf \"$DEST_NEW\"\n";
+  out << "  if cp -R \"$SRC_APP\" \"$DEST_NEW\"; then\n";
+  out << "    rm -rf \"$DEST\"\n";
+  out << "    mv \"$DEST_NEW\" \"$DEST\"\n";
+  out << "    echo \"$DEST\"\n";
+  out << "    return 0\n";
+  out << "  fi\n";
+  out << "  rm -rf \"$DEST_NEW\"\n";
+  out << "  return 1\n";
+  out << "}\n";
+  out << "while kill -0 \"$PID\" >/dev/null 2>&1; do\n";
+  out << "  sleep 0.25\n";
+  out << "done\n";
+  out << "INSTALLED=\"\"\n";
+  out << "if INSTALLED=$(install_to \"/Applications/quickqc.app\"); then\n";
+  out << "  :\n";
+  out << "elif INSTALLED=$(install_to \"$HOME/Applications/quickqc.app\"); then\n";
+  out << "  :\n";
+  out << "else\n";
+  out << "  exit 1\n";
+  out << "fi\n";
+  out << "if [ \"$RELAUNCH\" = \"1\" ]; then\n";
+  out << "  open \"$INSTALLED\"\n";
+  out << "fi\n";
+  script.flush();
+  script.close();
+
+  if (!QFile::setPermissions(
+          scriptPath,
+          QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to make update helper executable.");
+    }
+    return false;
+  }
+
+  const QStringList args = {
+      scriptPath,
+      QString::number(QCoreApplication::applicationPid()),
+      stagedAppPath,
+      relaunchAfterInstall ? QStringLiteral("1") : QStringLiteral("0"),
+  };
+  if (!QProcess::startDetached(QStringLiteral("/bin/sh"), args)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to launch update installer helper.");
+    }
+    return false;
+  }
+
+  return true;
+#endif
 }
 
 class GpuImagePreviewWidget final : public QOpenGLWidget {
@@ -1291,6 +1616,9 @@ void MainWindow::refreshStats() {
 void MainWindow::openSettingsDialog() {
   QDialog dialog(this);
   dialog.setWindowTitle(QStringLiteral("Settings"));
+  dialog.setWindowModality(Qt::ApplicationModal);
+  dialog.setWindowFlag(Qt::Sheet, false);
+  dialog.setWindowFlag(Qt::WindowCloseButtonHint, true);
   dialog.resize(440, 360);
 
   auto* root = new QVBoxLayout(&dialog);
@@ -1535,6 +1863,9 @@ void MainWindow::onOpenSettings() {
   if (!isVisible()) {
     showNearCursor();
   } else {
+    if (isMinimized()) {
+      showNormal();
+    }
     raise();
     activateWindow();
   }
@@ -1546,14 +1877,15 @@ void MainWindow::onCheckUpdates() {
     None,
     Close,
     Later,
-    UpdateNow,
-    RestartNow,
+    DownloadInstall,
   };
 
   QDialog dialog(this);
   dialog.setWindowTitle(QStringLiteral("Update Check"));
-  dialog.setWindowModality(Qt::WindowModal);
-  dialog.setMinimumWidth(420);
+  dialog.setWindowModality(Qt::ApplicationModal);
+  dialog.setWindowFlag(Qt::Sheet, false);
+  dialog.setWindowFlag(Qt::WindowCloseButtonHint, true);
+  dialog.setMinimumWidth(430);
 
   auto* root = new QVBoxLayout(&dialog);
   root->setContentsMargins(14, 14, 14, 14);
@@ -1581,14 +1913,39 @@ void MainWindow::onCheckUpdates() {
   root->addWidget(progressBar);
   root->addWidget(buttons);
 
+  UpdateChoice choice = UpdateChoice::None;
+  auto clearDialogButtons = [buttons]() {
+    const QList<QAbstractButton*> existing = buttons->buttons();
+    for (QAbstractButton* button : existing) {
+      buttons->removeButton(button);
+      button->deleteLater();
+    }
+  };
+  auto addDialogButton = [&dialog, buttons, &choice](const QString& text, const UpdateChoice mappedChoice, const QDialogButtonBox::ButtonRole role) {
+    auto* button = buttons->addButton(text, role);
+    QObject::connect(button, &QPushButton::clicked, &dialog, [&dialog, &choice, mappedChoice]() {
+      choice = mappedChoice;
+      dialog.done(QDialog::Accepted);
+    });
+  };
+  auto waitForDialogClose = [&dialog]() {
+    QEventLoop userLoop;
+    QObject::connect(&dialog, &QDialog::finished, &userLoop, &QEventLoop::quit);
+    userLoop.exec();
+  };
+
+  clearDialogButtons();
+  addDialogButton(QStringLiteral("Cancel"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+
   dialog.show();
+  dialog.raise();
+  dialog.activateWindow();
   qApp->processEvents();
 
   QNetworkAccessManager networkManager;
+  const QString userAgent = QStringLiteral("quickqc/%1").arg(versionString());
   QNetworkRequest request(QUrl(QString::fromUtf8(kReleaseApiUrl)));
-  request.setHeader(
-      QNetworkRequest::UserAgentHeader,
-      QStringLiteral("quickqc/%1").arg(versionString()));
+  request.setHeader(QNetworkRequest::UserAgentHeader, userAgent);
   request.setRawHeader("Accept", "application/vnd.github+json");
 
   QNetworkReply* reply = networkManager.get(request);
@@ -1599,6 +1956,11 @@ void MainWindow::onCheckUpdates() {
   timeoutTimer.setInterval(12000);
   bool timedOut = false;
 
+  connect(&dialog, &QDialog::finished, &dialog, [reply]() {
+    if (reply && reply->isRunning()) {
+      reply->abort();
+    }
+  });
   connect(&timeoutTimer, &QTimer::timeout, &dialog, [reply, &timedOut]() {
     timedOut = true;
     if (reply && reply->isRunning()) {
@@ -1611,21 +1973,17 @@ void MainWindow::onCheckUpdates() {
   loop.exec();
   progressBar->hide();
 
+  if (!dialog.isVisible()) {
+    reply->deleteLater();
+    statusLabel_->setText(QStringLiteral("Update check canceled."));
+    return;
+  }
+
   const QVariant statusCodeVar = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
   const int statusCode = statusCodeVar.isValid() ? statusCodeVar.toInt() : 0;
   const QByteArray payload = reply->readAll();
   const QNetworkReply::NetworkError replyError = reply->error();
   reply->deleteLater();
-
-  UpdateChoice choice = UpdateChoice::None;
-  auto addDialogButton =
-      [&dialog, buttons, &choice](const QString& text, const UpdateChoice mappedChoice, const QDialogButtonBox::ButtonRole role) {
-        auto* button = buttons->addButton(text, role);
-        QObject::connect(button, &QPushButton::clicked, &dialog, [&dialog, &choice, mappedChoice]() {
-          choice = mappedChoice;
-          dialog.accept();
-        });
-      };
 
   if (replyError != QNetworkReply::NoError) {
     QString message = QStringLiteral("Update check failed. Please try again.");
@@ -1639,8 +1997,9 @@ void MainWindow::onCheckUpdates() {
 
     titleLabel->setText(QStringLiteral("Could not check updates"));
     detailLabel->setText(message);
+    clearDialogButtons();
     addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-    dialog.exec();
+    waitForDialogClose();
     statusLabel_->setText(message);
     return;
   }
@@ -1651,8 +2010,9 @@ void MainWindow::onCheckUpdates() {
     const QString message = QStringLiteral("Received invalid update metadata.");
     titleLabel->setText(QStringLiteral("Could not check updates"));
     detailLabel->setText(message);
+    clearDialogButtons();
     addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-    dialog.exec();
+    waitForDialogClose();
     statusLabel_->setText(message);
     return;
   }
@@ -1660,14 +2020,15 @@ void MainWindow::onCheckUpdates() {
   const QJsonObject obj = doc.object();
   const QString latestTag = obj.value(QStringLiteral("tag_name")).toString();
   const QString latestVersion = normalizeVersion(latestTag);
-  const QString latestUrl = obj.value(QStringLiteral("html_url")).toString();
+  const QString assetUrl = releaseAssetUrlForCurrentPlatform(obj);
 
   if (latestVersion.isEmpty()) {
     const QString message = QStringLiteral("Update metadata is missing a release version.");
     titleLabel->setText(QStringLiteral("Could not check updates"));
     detailLabel->setText(message);
+    clearDialogButtons();
     addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-    dialog.exec();
+    waitForDialogClose();
     statusLabel_->setText(message);
     return;
   }
@@ -1677,31 +2038,62 @@ void MainWindow::onCheckUpdates() {
   if (versionCmp < 0) {
     titleLabel->setText(QStringLiteral("Update available"));
     detailLabel->setText(
-        QStringLiteral("Latest version: %1\nCurrent version: %2\n\nChoose what to do now.")
+        QStringLiteral("Latest version: %1\nCurrent version: %2\n\nDownload and install this update now?")
             .arg(latestVersion, currentVersion));
-    addDialogButton(QStringLiteral("Update Now"), UpdateChoice::UpdateNow, QDialogButtonBox::AcceptRole);
+    clearDialogButtons();
+    addDialogButton(QStringLiteral("Download && Install"), UpdateChoice::DownloadInstall, QDialogButtonBox::AcceptRole);
     addDialogButton(QStringLiteral("Later"), UpdateChoice::Later, QDialogButtonBox::RejectRole);
-    addDialogButton(QStringLiteral("Restart Now"), UpdateChoice::RestartNow, QDialogButtonBox::ActionRole);
-    dialog.exec();
+    waitForDialogClose();
 
-    if (choice == UpdateChoice::UpdateNow && !latestUrl.isEmpty()) {
-      QDesktopServices::openUrl(QUrl(latestUrl));
-      statusLabel_->setText(
-          QStringLiteral("Opened download page for %1. Install it, then restart QuickQC.")
-              .arg(latestVersion));
+    if (choice != UpdateChoice::DownloadInstall) {
+      statusLabel_->setText(QStringLiteral("Update available: %1.").arg(latestVersion));
       return;
     }
 
-    if (choice == UpdateChoice::RestartNow) {
-      if (restartApplication()) {
-        return;
-      }
-      QMessageBox::warning(this, QStringLiteral("Restart"), QStringLiteral("Failed to restart app."));
-      statusLabel_->setText(QStringLiteral("Failed to restart app."));
+    if (assetUrl.isEmpty()) {
+      const QString message = QStringLiteral("Automatic update package was not found for this Mac architecture.");
+      QMessageBox::warning(this, QStringLiteral("Update"), message);
+      statusLabel_->setText(message);
       return;
     }
 
-    statusLabel_->setText(QStringLiteral("Update available: %1.").arg(latestVersion));
+    QString stagedAppPath;
+    QString stageError;
+    if (!stageMacUpdate(this, assetUrl, userAgent, &stagedAppPath, &stageError)) {
+      QMessageBox::warning(this, QStringLiteral("Update"), stageError);
+      statusLabel_->setText(stageError);
+      return;
+    }
+
+    QMessageBox restartPrompt(this);
+    restartPrompt.setWindowTitle(QStringLiteral("Update Ready"));
+    restartPrompt.setText(
+        QStringLiteral("%1 %2 has been downloaded and prepared.")
+            .arg(QString::fromUtf8(kAppDisplayName), latestVersion));
+    restartPrompt.setInformativeText(
+        QStringLiteral("Restart now to apply immediately, or Later to install automatically when QuickQC exits."));
+    auto* restartNowBtn = restartPrompt.addButton(QStringLiteral("Restart Now"), QMessageBox::AcceptRole);
+    auto* laterBtn = restartPrompt.addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
+    Q_UNUSED(laterBtn);
+    restartPrompt.exec();
+
+    const bool restartNow = restartPrompt.clickedButton() == restartNowBtn;
+
+    QString helperError;
+    if (!launchMacInstallHelper(stagedAppPath, restartNow, &helperError)) {
+      QMessageBox::warning(this, QStringLiteral("Update"), helperError);
+      statusLabel_->setText(helperError);
+      return;
+    }
+
+    if (restartNow) {
+      qApp->quit();
+      return;
+    }
+
+    const QString message = QStringLiteral("Update downloaded. It will install after you quit QuickQC.");
+    QMessageBox::information(this, QStringLiteral("Update Scheduled"), message);
+    statusLabel_->setText(message);
     return;
   }
 
@@ -1710,8 +2102,9 @@ void MainWindow::onCheckUpdates() {
     detailLabel->setText(
         QStringLiteral("Current version: %1\nLatest version: %2")
             .arg(currentVersion, latestVersion));
+    clearDialogButtons();
     addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-    dialog.exec();
+    waitForDialogClose();
     statusLabel_->setText(QStringLiteral("Already on latest version (%1).").arg(currentVersion));
     return;
   }
@@ -1720,8 +2113,9 @@ void MainWindow::onCheckUpdates() {
   detailLabel->setText(
       QStringLiteral("Current version: %1\nLatest public release: %2")
           .arg(currentVersion, latestVersion));
+  clearDialogButtons();
   addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-  dialog.exec();
+  waitForDialogClose();
   statusLabel_->setText(QStringLiteral("Running newer build (%1).").arg(currentVersion));
 }
 
