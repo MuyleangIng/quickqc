@@ -159,11 +159,27 @@ jobs:
         if: runner.os != 'Windows'
         run: cmake --build build --parallel
 
+      - name: Install bundle (macOS)
+        if: runner.os == 'macOS'
+        run: cmake --install build --config Release --prefix dist
+
+      - name: Verify bundle links (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          APP_BIN="dist/quickqc.app/Contents/MacOS/quickqc"
+          test -f "$APP_BIN"
+          otool -L "$APP_BIN" | grep -q "@executable_path/../Frameworks/QtSql.framework/Versions/A/QtSql"
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          if [ -d build/quickqc.app ]; then
-            tar -czf quickqc-${{ matrix.id }}.tar.gz -C build quickqc.app
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            if [ -d dist/quickqc.app ]; then
+              tar -czf quickqc-${{ matrix.id }}.tar.gz -C dist quickqc.app
+            else
+              echo "Installed macOS bundle not found at dist/quickqc.app" >&2
+              exit 1
+            fi
           elif [ -f build/quickqc ]; then
             tar -czf quickqc-${{ matrix.id }}.tar.gz -C build quickqc
           else
