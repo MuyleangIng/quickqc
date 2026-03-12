@@ -130,7 +130,8 @@ jobs:
         shell: pwsh
         run: |
           if ('${{ matrix.id }}' -eq 'windows-arm64') {
-            "CMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE\qt6\6.7.3\msvc2019_arm64;$env:GITHUB_WORKSPACE\qt6\6.7.3\msvc2019_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "CMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE\qt6\6.7.3\msvc2019_arm64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "QT_HOST_PATH=$env:GITHUB_WORKSPACE\qt6\6.7.3\msvc2019_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } else {
             "CMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE\qt6\6.7.3\${{ matrix.qt_prefix }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
@@ -140,7 +141,7 @@ jobs:
         shell: pwsh
         run: |
           if ('${{ matrix.id }}' -eq 'windows-arm64') {
-            cmake -S . -B build -A ARM64 -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH"
+            cmake -S . -B build -A ARM64 -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH" -DQT_HOST_PATH="$env:QT_HOST_PATH"
           } else {
             cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH"
           }
@@ -275,6 +276,14 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: true
+
       - name: Download all artifacts
         uses: actions/download-artifact@v5
         with:
