@@ -60,9 +60,16 @@ QuickQC stores data in your OS app-data directory with:
 Recommended first release tag:
 
 ```bash
-git tag -a v0.1.0 -m "QuickQC v0.1.0"
-git push origin v0.1.0
+git tag -a 0.1.0 -m "QuickQC 0.1.0"
+git push origin 0.1.0
 ```
+
+Pushing tag `0.1.0` triggers GitHub Actions to build and attach release artifacts for:
+
+- macOS (AMD64 + ARM64)
+- Windows (AMD64)
+- Linux Ubuntu (AMD64 + ARM64)
+- Linux Fedora (AMD64 + ARM64)
 
 ## Issues and Sponsorship
 
