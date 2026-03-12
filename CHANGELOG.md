@@ -4,6 +4,13 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.4] - 2026-03-12
+
+### Fixed
+
+- Fixed Linux builds with older Qt 6 where `QKeySequenceEdit::setMaximumSequenceLength` is unavailable.
+- Kept single-shortcut hotkey behavior on all platforms by normalizing the first key sequence step.
+
 ## [0.2.3] - 2026-03-12
 
 ### Added
