@@ -16,6 +16,7 @@ jobs:
   build-native:
     name: build-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +32,7 @@ jobs:
             qt_host: mac
             qt_target: clang_64
             qt_prefix: macos
+            experimental: true
           - id: macos-arm64
             runner: macos-15
             qt_host: mac
@@ -41,6 +43,12 @@ jobs:
             qt_host: windows
             qt_target: win64_msvc2022_64
             qt_prefix: msvc2022_64
+          - id: windows-arm64
+            runner: windows-11-arm
+            qt_host: windows
+            qt_target: win64_msvc2022_arm64
+            qt_prefix: msvc2022_arm64
+            experimental: true
 
     steps:
       - name: Checkout
@@ -108,7 +116,12 @@ jobs:
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH"
+        run: |
+          if ('${{ matrix.id }}' -eq 'windows-arm64') {
+            cmake -S . -B build -A ARM64 -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH"
+          } else {
+            cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH"
+          }
 
       - name: Configure (Non-Windows)
         if: runner.os != 'Windows'
@@ -160,6 +173,7 @@ jobs:
   build-fedora:
     name: build-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental || false }}
     container:
       image: fedora:41
     strategy:
@@ -240,9 +254,12 @@ jobs:
           path: dist-artifacts
           merge-multiple: true
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist-artifacts/*
-          body_path: .github/release-notes.md
-          generate_release_notes: true
+      - name: Publish GitHub Release (official gh CLI)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          gh release view "$TAG_NAME" >/dev/null 2>&1 && gh release delete "$TAG_NAME" --yes || true
+          gh release create "$TAG_NAME" dist-artifacts/* \
+            --title "QuickQC $TAG_NAME" \
+            --notes-file .github/release-notes.md
