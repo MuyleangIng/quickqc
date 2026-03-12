@@ -4,6 +4,14 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.1.6] - 2026-03-12
+
+### Fixed
+
+- Added single-instance handling so launching QuickQC again focuses the running app instead of opening duplicates.
+- Fixed "Start app when I log in" to stop immediately spawning another instance when toggled on.
+- Improved "Open Settings" behavior from tray by showing/focusing the main window first.
+
 ## [0.1.5] - 2026-03-12
 
 ### Fixed

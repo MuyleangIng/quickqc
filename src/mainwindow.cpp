@@ -683,16 +683,10 @@ bool MainWindow::setLaunchAtLogin(const bool enabled, QString* errorMessage) con
     out << "</plist>\n";
     f.close();
 
-    QProcess::execute(QStringLiteral("launchctl"), {QStringLiteral("unload"), QStringLiteral("-w"), plistPath});
-    const int rc = QProcess::execute(
-        QStringLiteral("launchctl"),
-        {QStringLiteral("load"), QStringLiteral("-w"), plistPath});
-
-    if (rc != 0 && errorMessage) {
-      *errorMessage = QStringLiteral("launchctl failed while enabling startup.");
+    if (errorMessage) {
+      errorMessage->clear();
     }
-
-    return rc == 0;
+    return true;
   }
 
   QProcess::execute(QStringLiteral("launchctl"), {QStringLiteral("unload"), QStringLiteral("-w"), plistPath});
@@ -1473,6 +1467,12 @@ void MainWindow::onImportImage() {
 }
 
 void MainWindow::onOpenSettings() {
+  if (!isVisible()) {
+    showNearCursor();
+  } else {
+    raise();
+    activateWindow();
+  }
   openSettingsDialog();
 }
 
