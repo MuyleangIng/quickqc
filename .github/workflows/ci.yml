@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  build-native:
     name: build-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -22,25 +22,41 @@ jobs:
         include:
           - id: linux-ubuntu-amd64
             runner: ubuntu-latest
+            distro: ubuntu
           - id: linux-ubuntu-arm64
             runner: ubuntu-24.04-arm
+            distro: ubuntu
           - id: macos-amd64
             runner: macos-15-intel
+            qt_host: mac
+            qt_target: clang_64
+            qt_prefix: macos
           - id: macos-arm64
             runner: macos-15
+            qt_host: mac
+            qt_target: clang_64
+            qt_prefix: macos
           - id: windows-amd64
             runner: windows-latest
+            qt_host: windows
+            qt_target: win64_msvc2022_64
+            qt_prefix: msvc2022_64
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Ubuntu build dependencies
-        if: runner.os == 'Linux'
+        if: matrix.distro == 'ubuntu'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
+            ninja-build \
+            cmake \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            libqt6opengl6-dev \
             libgl1-mesa-dev \
             libxkbcommon-dev \
             libfontconfig1-dev \
@@ -67,25 +83,44 @@ jobs:
             libxcb-xinerama0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        if: matrix.qt_host != ''
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.x'
+          python-version: '3.12'
 
-      - name: Install Ninja
+      - name: Install Qt with aqt (macOS/Windows)
+        if: matrix.qt_host != ''
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ninja
+          python -m pip install aqtinstall==3.2.1
+          python -m aqt install-qt ${{ matrix.qt_host }} desktop 6.7.3 ${{ matrix.qt_target }} --outputdir qt6
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.7.3'
-          cache: true
+      - name: Export Qt path (macOS)
+        if: runner.os == 'macOS'
+        run: echo "CMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/qt6/6.7.3/${{ matrix.qt_prefix }}" >> "$GITHUB_ENV"
 
-      - name: Configure
+      - name: Export Qt path (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE\qt6\6.7.3\${{ matrix.qt_prefix }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH="$env:CMAKE_PREFIX_PATH"
+
+      - name: Configure (Non-Windows)
+        if: runner.os != 'Windows'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      - name: Build (Non-Windows)
+        if: runner.os != 'Windows'
         run: cmake --build build --parallel
 
       - name: Package (Unix)
@@ -104,18 +139,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if (Test-Path "build/quickqc.exe") {
-            Compress-Archive -Path "build/quickqc.exe" -DestinationPath "quickqc-${{ matrix.id }}.zip" -Force
-          }
-          elseif (Test-Path "build/Release/quickqc.exe") {
+          if (Test-Path "build/Release/quickqc.exe") {
             Compress-Archive -Path "build/Release/quickqc.exe" -DestinationPath "quickqc-${{ matrix.id }}.zip" -Force
+          }
+          elseif (Test-Path "build/quickqc.exe") {
+            Compress-Archive -Path "build/quickqc.exe" -DestinationPath "quickqc-${{ matrix.id }}.zip" -Force
           }
           else {
             throw "Build output not found"
           }
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: quickqc-${{ matrix.id }}
           path: |
@@ -138,7 +173,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Fedora build dependencies
         run: |
@@ -148,8 +183,6 @@ jobs:
             ninja-build \
             gcc-c++ \
             git \
-            python3 \
-            python3-pip \
             tar \
             gzip \
             which \
@@ -172,11 +205,6 @@ jobs:
             xcb-util-wm-devel \
             xcb-util-renderutil-devel
 
-      - name: Install Ninja (pip fallback)
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install ninja
-
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
@@ -193,21 +221,21 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: quickqc-${{ matrix.id }}
           path: quickqc-${{ matrix.id }}.tar.gz
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    needs: [build, build-fedora]
+    needs: [build-native, build-fedora]
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: dist-artifacts
           merge-multiple: true
