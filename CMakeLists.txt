@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(QuickQC VERSION 0.1.10 LANGUAGES CXX)
+project(QuickQC VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +14,8 @@ qt_standard_project_setup()
 
 qt_add_executable(quickqc
     src/main.cpp
+    src/globalhotkey.h
+    src/globalhotkey.cpp
     src/clipitem.h
     src/clipstorage.h
     src/clipstorage.cpp
@@ -31,6 +33,10 @@ target_link_libraries(quickqc
         Qt6::OpenGLWidgets
         Qt6::Network
 )
+
+if(APPLE)
+    target_link_libraries(quickqc PRIVATE "-framework Carbon")
+endif()
 
 target_compile_definitions(quickqc
     PRIVATE

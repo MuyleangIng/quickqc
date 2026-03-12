@@ -4,6 +4,17 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.0] - 2026-03-12
+
+### Added
+
+- Added open-QuickQC hotkeys: `Cmd+Shift+V` on macOS and `Ctrl+Shift+V` on Windows.
+- Added native global hotkey registration so QuickQC can be opened quickly while running.
+
+### Changed
+
+- Updated UI subtitle text to show the open shortcut.
+
 ## [0.1.10] - 2026-03-12
 
 ### Fixed

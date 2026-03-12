@@ -76,6 +76,11 @@ namespace {
 constexpr const char* kAppDisplayName = "QuickQC";
 constexpr const char* kFounderName = "Ing Muyleang";
 constexpr const char* kReleaseApiUrl = "https://api.github.com/repos/MuyleangIng/quickqc/releases/latest";
+#if defined(Q_OS_MAC)
+constexpr const char* kOpenHotkeyText = "Cmd+Shift+V";
+#else
+constexpr const char* kOpenHotkeyText = "Ctrl+Shift+V";
+#endif
 
 QString kindText(const ClipKind kind) {
   return kind == ClipKind::Image ? QStringLiteral("image") : QStringLiteral("text");
@@ -615,7 +620,8 @@ void MainWindow::setupUi() {
   title->setObjectName(QStringLiteral("title"));
 
   auto* subtitle = new QLabel(
-      QStringLiteral("Compact clipboard manager • Esc to close"),
+      QStringLiteral("Compact clipboard manager • %1 to open • Esc to close")
+          .arg(QString::fromUtf8(kOpenHotkeyText)),
       central);
   subtitle->setObjectName(QStringLiteral("subtitle"));
 
@@ -800,6 +806,16 @@ void MainWindow::showToast(const QString& message, int durationMs) {
 }
 
 void MainWindow::setupShortcuts() {
+  auto* openShortcut = new QShortcut(
+#if defined(Q_OS_MAC)
+      QKeySequence(QStringLiteral("Meta+Shift+V")),
+#else
+      QKeySequence(QStringLiteral("Ctrl+Shift+V")),
+#endif
+      this);
+  openShortcut->setContext(Qt::ApplicationShortcut);
+  connect(openShortcut, &QShortcut::activated, this, &MainWindow::showNearCursor);
+
   auto* escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
   escShortcut->setContext(Qt::WidgetWithChildrenShortcut);
   connect(escShortcut, &QShortcut::activated, this, [this]() { hide(); });

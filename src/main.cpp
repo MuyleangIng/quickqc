@@ -1,8 +1,10 @@
 #include "clipboardwatcher.h"
 #include "clipstorage.h"
+#include "globalhotkey.h"
 #include "mainwindow.h"
 
 #include <QApplication>
+#include <QDebug>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QMessageBox>
@@ -16,7 +18,7 @@ int main(int argc, char* argv[]) {
 #ifdef QUICKQC_VERSION
   app.setApplicationVersion(QStringLiteral(QUICKQC_VERSION));
 #else
-  app.setApplicationVersion(QStringLiteral("0.1.0"));
+  app.setApplicationVersion(QStringLiteral("0.2.0"));
 #endif
 
   const QString instanceServerName = QStringLiteral("com.muyleang.quickqc.instance");
@@ -56,6 +58,13 @@ int main(int argc, char* argv[]) {
   MainWindow window(&storage, &watcher);
 
   QObject::connect(&watcher, &ClipboardWatcher::historyChanged, &window, &MainWindow::scheduleRefresh);
+  GlobalHotkey hotkey(&app);
+  if (!hotkey.registerOpenClipboardHotkey()) {
+    qWarning() << "QuickQC global open hotkey registration failed; in-window shortcut remains available.";
+  }
+  QObject::connect(&hotkey, &GlobalHotkey::activated, &window, [&window]() {
+    QMetaObject::invokeMethod(&window, &MainWindow::showNearCursor, Qt::QueuedConnection);
+  });
   QObject::connect(&instanceServer, &QLocalServer::newConnection, &window, [&instanceServer, &window]() {
     while (QLocalSocket* client = instanceServer.nextPendingConnection()) {
       client->readAll();
