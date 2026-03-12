@@ -4,6 +4,12 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.1.7] - 2026-03-12
+
+### Added
+
+- Added live update checking against the latest GitHub release with loading state and clear up-to-date/update-available messages.
+
 ## [0.1.6] - 2026-03-12
 
 ### Fixed

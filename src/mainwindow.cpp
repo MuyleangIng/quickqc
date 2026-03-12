@@ -19,6 +19,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -27,12 +28,18 @@
 #include <QHash>
 #include <QHBoxLayout>
 #include <QImage>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -40,6 +47,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
@@ -62,12 +70,59 @@
 namespace {
 constexpr const char* kAppDisplayName = "QuickQC";
 constexpr const char* kFounderName = "Ing Muyleang";
+constexpr const char* kReleaseApiUrl = "https://api.github.com/repos/MuyleangIng/quickqc/releases/latest";
 
 QString kindText(const ClipKind kind) {
   return kind == ClipKind::Image ? QStringLiteral("image") : QStringLiteral("text");
 }
 
 QHash<QString, QPixmap> gImageThumbCache;
+
+QString normalizeVersion(const QString& rawVersion) {
+  QString version = rawVersion.trimmed();
+  if (version.startsWith(QStringLiteral("v"), Qt::CaseInsensitive)) {
+    version.remove(0, 1);
+  }
+
+  const int hyphenPos = version.indexOf('-');
+  if (hyphenPos > 0) {
+    version = version.left(hyphenPos);
+  }
+
+  return version;
+}
+
+int compareVersions(const QString& lhsRaw, const QString& rhsRaw) {
+  const QString lhs = normalizeVersion(lhsRaw);
+  const QString rhs = normalizeVersion(rhsRaw);
+  const QStringList lhsParts = lhs.split('.', Qt::SkipEmptyParts);
+  const QStringList rhsParts = rhs.split('.', Qt::SkipEmptyParts);
+  const int maxParts = std::max(lhsParts.size(), rhsParts.size());
+
+  for (int i = 0; i < maxParts; ++i) {
+    bool lhsOk = false;
+    bool rhsOk = false;
+
+    const int lhsNum = (i < lhsParts.size()) ? lhsParts.at(i).toInt(&lhsOk) : 0;
+    const int rhsNum = (i < rhsParts.size()) ? rhsParts.at(i).toInt(&rhsOk) : 0;
+
+    if (!lhsOk && i < lhsParts.size()) {
+      return -1;
+    }
+    if (!rhsOk && i < rhsParts.size()) {
+      return 1;
+    }
+
+    if (lhsNum < rhsNum) {
+      return -1;
+    }
+    if (lhsNum > rhsNum) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
 
 class GpuImagePreviewWidget final : public QOpenGLWidget {
  public:
@@ -1314,7 +1369,7 @@ void MainWindow::openSettingsDialog() {
           .arg(QString::fromUtf8(kFounderName), versionString()),
       &dialog);
 
-  auto* updateBtn = new QPushButton(QStringLiteral("Update Actions"), &dialog);
+  auto* updateBtn = new QPushButton(QStringLiteral("Check for Updates"), &dialog);
   connect(updateBtn, &QPushButton::clicked, this, &MainWindow::onCheckUpdates);
 
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
@@ -1477,42 +1532,122 @@ void MainWindow::onOpenSettings() {
 }
 
 void MainWindow::onCheckUpdates() {
-  QMessageBox box(this);
-  box.setWindowTitle(QStringLiteral("Update Ready"));
-  box.setText(
-      QStringLiteral("Update package is ready for %1 %2.")
-          .arg(QString::fromUtf8(kAppDisplayName), versionString()));
-  box.setInformativeText(QStringLiteral("Choose what to do now."));
+  QProgressDialog checkingDialog(QStringLiteral("Checking for updates..."), QString(), 0, 0, this);
+  checkingDialog.setWindowTitle(QStringLiteral("Update Check"));
+  checkingDialog.setCancelButton(nullptr);
+  checkingDialog.setWindowModality(Qt::WindowModal);
+  checkingDialog.setMinimumDuration(0);
+  checkingDialog.show();
+  qApp->processEvents();
 
-  auto* restartBtn = box.addButton(QStringLiteral("Restart Now"), QMessageBox::AcceptRole);
-  auto* reloadBtn = box.addButton(QStringLiteral("Reload Now"), QMessageBox::ActionRole);
-  auto* laterBtn = box.addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
+  QNetworkAccessManager networkManager;
+  QNetworkRequest request(QUrl(QString::fromUtf8(kReleaseApiUrl)));
+  request.setHeader(
+      QNetworkRequest::UserAgentHeader,
+      QStringLiteral("quickqc/%1").arg(versionString()));
+  request.setRawHeader("Accept", "application/vnd.github+json");
 
-  box.exec();
+  QNetworkReply* reply = networkManager.get(request);
 
-  if (box.clickedButton() == restartBtn) {
-    const QString appPath = QCoreApplication::applicationFilePath();
-    const QStringList args = QCoreApplication::arguments().mid(1);
+  QEventLoop loop;
+  QTimer timeoutTimer(this);
+  timeoutTimer.setSingleShot(true);
+  timeoutTimer.setInterval(12000);
 
-    if (QProcess::startDetached(appPath, args)) {
-      qApp->quit();
+  connect(&timeoutTimer, &QTimer::timeout, this, [reply]() {
+    if (reply && reply->isRunning()) {
+      reply->abort();
+    }
+  });
+  connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+  timeoutTimer.start();
+  loop.exec();
+  checkingDialog.close();
+
+  const QVariant statusCodeVar = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+  const int statusCode = statusCodeVar.isValid() ? statusCodeVar.toInt() : 0;
+  const QByteArray payload = reply->readAll();
+  const QNetworkReply::NetworkError replyError = reply->error();
+  reply->deleteLater();
+
+  if (replyError != QNetworkReply::NoError) {
+    QString message = QStringLiteral("Update check failed. Please try again.");
+    if (statusCode == 403) {
+      message = QStringLiteral("Update check rate-limited by GitHub. Please retry in a minute.");
+    } else if (statusCode >= 500) {
+      message = QStringLiteral("GitHub is currently unavailable. Please retry shortly.");
+    } else if (replyError == QNetworkReply::TimeoutError) {
+      message = QStringLiteral("Update check timed out.");
+    }
+    QMessageBox::warning(this, QStringLiteral("Update Check"), message);
+    statusLabel_->setText(message);
+    return;
+  }
+
+  QJsonParseError parseError;
+  const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
+  if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+    const QString message = QStringLiteral("Received invalid update metadata.");
+    QMessageBox::warning(this, QStringLiteral("Update Check"), message);
+    statusLabel_->setText(message);
+    return;
+  }
+
+  const QJsonObject obj = doc.object();
+  const QString latestTag = obj.value(QStringLiteral("tag_name")).toString();
+  const QString latestVersion = normalizeVersion(latestTag);
+  const QString latestUrl = obj.value(QStringLiteral("html_url")).toString();
+  const QString currentVersion = normalizeVersion(versionString());
+
+  if (latestVersion.isEmpty()) {
+    const QString message = QStringLiteral("Update metadata is missing a release version.");
+    QMessageBox::warning(this, QStringLiteral("Update Check"), message);
+    statusLabel_->setText(message);
+    return;
+  }
+
+  const int versionCmp = compareVersions(currentVersion, latestVersion);
+
+  if (versionCmp < 0) {
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("Update Available"));
+    box.setText(
+        QStringLiteral("%1 %2 is available (you have %3).")
+            .arg(QString::fromUtf8(kAppDisplayName), latestVersion, currentVersion));
+    box.setInformativeText(QStringLiteral("Choose what to do now."));
+
+    auto* openReleaseBtn = box.addButton(QStringLiteral("Open Download Page"), QMessageBox::AcceptRole);
+    auto* laterBtn = box.addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
+    Q_UNUSED(laterBtn);
+
+    box.exec();
+
+    if (box.clickedButton() == openReleaseBtn && !latestUrl.isEmpty()) {
+      QDesktopServices::openUrl(QUrl(latestUrl));
+      statusLabel_->setText(QStringLiteral("Opened release page for %1.").arg(latestVersion));
       return;
     }
 
-    QMessageBox::warning(this, QStringLiteral("Restart"), QStringLiteral("Failed to restart app."));
+    statusLabel_->setText(QStringLiteral("Update available: %1.").arg(latestVersion));
     return;
   }
 
-  if (box.clickedButton() == reloadBtn) {
-    applyStyles();
-    refresh();
-    statusLabel_->setText(QStringLiteral("UI reloaded. Restart later to apply full update."));
+  if (versionCmp == 0) {
+    QMessageBox::information(
+        this,
+        QStringLiteral("Up to Date"),
+        QStringLiteral("You are already using the latest version (%1).").arg(currentVersion));
+    statusLabel_->setText(QStringLiteral("Already on latest version (%1).").arg(currentVersion));
     return;
   }
 
-  if (box.clickedButton() == laterBtn) {
-    statusLabel_->setText(QStringLiteral("Update postponed."));
-  }
+  QMessageBox::information(
+      this,
+      QStringLiteral("Version Check"),
+      QStringLiteral("You are using %1, newer than latest public release %2.")
+          .arg(currentVersion, latestVersion));
+  statusLabel_->setText(QStringLiteral("Running newer build (%1).").arg(currentVersion));
 }
 
 void MainWindow::onItemActivated(QListWidgetItem* item) {
