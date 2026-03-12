@@ -98,6 +98,16 @@ QString normalizeHotkeySetting(const QString& raw) {
   return seq.toString(QKeySequence::PortableText);
 }
 
+QString firstHotkeyStepPortable(const QKeySequence& sequence) {
+  const QString portable = sequence.toString(QKeySequence::PortableText);
+  const QString firstStep = portable.section(',', 0, 0).trimmed();
+  if (firstStep.isEmpty()) {
+    return QString();
+  }
+  return QKeySequence::fromString(firstStep, QKeySequence::PortableText)
+      .toString(QKeySequence::PortableText);
+}
+
 QString kindText(const ClipKind kind) {
   return kind == ClipKind::Image ? QStringLiteral("image") : QStringLiteral("text");
 }
@@ -1803,7 +1813,9 @@ void MainWindow::openSettingsDialog() {
   auto* hotkeyRow = new QHBoxLayout();
   auto* hotkeyLabel = new QLabel(QStringLiteral("Open app hotkey"), &dialog);
   auto* hotkeyEdit = new QKeySequenceEdit(&dialog);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
   hotkeyEdit->setMaximumSequenceLength(1);
+#endif
   hotkeyEdit->setKeySequence(QKeySequence::fromString(
       appSettings_.openHotkey,
       QKeySequence::PortableText));
@@ -1857,8 +1869,8 @@ void MainWindow::openSettingsDialog() {
     next.themeMode = static_cast<ThemeMode>(themeBtnGroup->id(checkedThemeBtn));
   }
   next.autoCheckOnStartup = startupUpdateCheck->isChecked();
-  next.openHotkey = normalizeHotkeySetting(
-      hotkeyEdit->keySequence().toString(QKeySequence::PortableText));
+  const QString selectedHotkey = firstHotkeyStepPortable(hotkeyEdit->keySequence());
+  next.openHotkey = normalizeHotkeySetting(selectedHotkey);
   next.gpuPreviewEnabled = gpuCheck->isChecked() && gpuInfo_.supported;
 
   const bool requestedStartup = startupCheck->isChecked();
