@@ -4,6 +4,13 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.2] - 2026-03-12
+
+### Changed
+
+- Prepared release `0.2.2` to validate in-app update flow from `0.2.1` to `0.2.2`.
+- Updated README with clearer hotkey and in-app update instructions.
+
 ## [0.2.1] - 2026-03-12
 
 ### Fixed

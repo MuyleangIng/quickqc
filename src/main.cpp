@@ -18,7 +18,7 @@ int main(int argc, char* argv[]) {
 #ifdef QUICKQC_VERSION
   app.setApplicationVersion(QStringLiteral(QUICKQC_VERSION));
 #else
-  app.setApplicationVersion(QStringLiteral("0.2.1"));
+  app.setApplicationVersion(QStringLiteral("0.2.2"));
 #endif
 
   const QString instanceServerName = QStringLiteral("com.muyleang.quickqc.instance");

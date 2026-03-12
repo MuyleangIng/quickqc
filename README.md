@@ -13,11 +13,15 @@ QuickQC is a fast, offline clipboard manager for text and images, built with C++
 - SQLite local storage (`quickqc.sqlite`)
 - Realtime clipboard capture for text and images
 - Image file copy capture from Finder/Explorer (`Cmd/Ctrl + C`)
+- Open hotkey support:
+  - macOS: `Cmd+Shift+V`
+  - Windows/Linux: `Ctrl+Shift+V`
 - Per-item actions (`Copy`, `Edit`, `Pin`, `Delete`, `Preview`)
 - Clean toast feedback for copy actions
 - Theme chips (`System`, `Moon`, `Sun`)
 - Optional GPU image preview (with runtime support check)
 - Tray menu, startup option, update action dialog
+- In-app updater (macOS): checks latest release, downloads package, and stages install with `Restart Now` or `Later`
 
 ## Supported Platforms
 
@@ -87,6 +91,21 @@ chmod +x ~/.local/bin/quickqc
 - macOS (Homebrew): `brew update && brew upgrade --cask quickqc`
 - Linux: rerun `install-linux.sh` command above to pull the latest release
 - Windows: rerun `install-windows.ps1` command above to pull the latest release
+
+## In-App Update (macOS)
+
+Use this from inside QuickQC:
+
+1. Open **Settings** or tray menu and click **Check Updates**.
+2. If an update is available, click **Download & Install**.
+3. After download finishes:
+   - **Restart Now** applies update immediately.
+   - **Later** schedules update to apply when QuickQC exits.
+
+### Test Path: `0.2.1 -> 0.2.2`
+
+If you are on `0.2.1`, run **Check Updates** and update to `0.2.2` through the in-app updater flow above.
+Then confirm version shows `0.2.2` in Settings.
 
 ## Build
 
