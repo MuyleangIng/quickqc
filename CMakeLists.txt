@@ -46,3 +46,13 @@ install(TARGETS quickqc
     BUNDLE DESTINATION .
     RUNTIME DESTINATION bin
 )
+
+if(APPLE)
+    # Ensure macOS bundles include Qt frameworks/plugins and use bundle-relative rpaths.
+    qt_generate_deploy_app_script(
+        TARGET quickqc
+        OUTPUT_SCRIPT quickqc_deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT ${quickqc_deploy_script})
+endif()

@@ -11,9 +11,17 @@ Thanks for contributing.
 ## Development Setup
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
+
+For macOS release artifacts, also run:
+
+```bash
+cmake --install build --config Release --prefix dist
+```
+
+Package `dist/quickqc.app` (not `build/quickqc.app`) to ensure Qt runtime dependencies are bundled.
 
 ## Coding Guidelines
 

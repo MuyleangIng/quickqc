@@ -91,7 +91,7 @@ chmod +x ~/.local/bin/quickqc
 ## Build
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
@@ -106,6 +106,20 @@ On macOS bundle builds:
 ```bash
 ./build/quickqc.app/Contents/MacOS/quickqc
 ```
+
+## macOS Release Packaging
+
+For distributable macOS bundles, run install/deploy and package the installed app:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+cmake --install build --config Release --prefix dist
+tar -czf quickqc-macos-arm64.tar.gz -C dist quickqc.app
+```
+
+Important: do not package `build/quickqc.app` directly.  
+Use the app from `dist/quickqc.app` so Qt frameworks/plugins (including `QtSql`) are bundled.
 
 ## Data Location
 
