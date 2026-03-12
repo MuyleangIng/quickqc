@@ -4,6 +4,7 @@
 
 #include <QMainWindow>
 #include <QSettings>
+#include <QString>
 #include <QSystemTrayIcon>
 
 #include <optional>
@@ -17,6 +18,7 @@ class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
+class QShortcut;
 class QAction;
 class QMenu;
 class QTimer;
@@ -33,6 +35,9 @@ class MainWindow : public QMainWindow {
   void refresh();
   void scheduleRefresh();
   void showNearCursor();
+
+ signals:
+  void openHotkeyChanged(const QString& hotkeyPortableText);
 
  private slots:
   void onSearchChanged(const QString& text);
@@ -63,6 +68,8 @@ class MainWindow : public QMainWindow {
     ThemeMode themeMode{ThemeMode::Dark};
     bool startAtLogin{false};
     bool gpuPreviewEnabled{false};
+    bool autoCheckOnStartup{true};
+    QString openHotkey;
   };
 
   struct GpuSupportInfo {
@@ -77,6 +84,7 @@ class MainWindow : public QMainWindow {
   void setupUi();
   void setupTray();
   void setupShortcuts();
+  void applyOpenShortcut();
   void applyStyles();
   void populateList(const QList<ClipItem>& items);
   void refreshStats();
@@ -125,6 +133,7 @@ class MainWindow : public QMainWindow {
   QPushButton* importButton_;
   QPushButton* settingsButton_;
   QPushButton* clearButton_;
+  QShortcut* openShortcut_;
 
   QLabel* storeSummaryLabel_;
   QLabel* cpuIconLabel_;
@@ -151,5 +160,6 @@ class MainWindow : public QMainWindow {
   QAction* trayHideAction_;
   QAction* trayQuitAction_;
 
+  bool startupSilentUpdateCheck_;
   QList<ClipItem> visibleItems_;
 };

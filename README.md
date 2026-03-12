@@ -16,12 +16,14 @@ QuickQC is a fast, offline clipboard manager for text and images, built with C++
 - Open hotkey support:
   - macOS: `Cmd+Shift+V`
   - Windows/Linux: `Ctrl+Shift+V`
+  - Customizable from Settings
 - Per-item actions (`Copy`, `Edit`, `Pin`, `Delete`, `Preview`)
 - Clean toast feedback for copy actions
 - Theme chips (`System`, `Moon`, `Sun`)
 - Optional GPU image preview (with runtime support check)
 - Tray menu, startup option, update action dialog
 - In-app updater (macOS): checks latest release, downloads package, and stages install with `Restart Now` or `Later`
+- Optional auto-check for updates on startup
 
 ## Supported Platforms
 
@@ -149,14 +151,14 @@ QuickQC stores data in your OS app-data directory with:
 
 ## Release Process
 
-Before tagging, add a matching section to `CHANGELOG.md` (for example `## [0.2.2] - YYYY-MM-DD`).
+Before tagging, add a matching section to `CHANGELOG.md` (for example `## [0.2.3] - YYYY-MM-DD`).
 Release notes are generated automatically from that section.
 
 Example tag:
 
 ```bash
-git tag -a 0.2.2 -m "QuickQC 0.2.2"
-git push origin 0.2.2
+git tag -a 0.2.3 -m "QuickQC 0.2.3"
+git push origin 0.2.3
 ```
 
 Pushing a tag triggers GitHub Actions to build and attach release artifacts for:

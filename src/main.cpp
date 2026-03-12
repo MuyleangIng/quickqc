@@ -5,9 +5,21 @@
 
 #include <QApplication>
 #include <QDebug>
+#include <QKeySequence>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QMessageBox>
+#include <QSettings>
+
+namespace {
+QString defaultOpenHotkeyPortable() {
+#if defined(Q_OS_MAC)
+  return QStringLiteral("Meta+Shift+V");
+#else
+  return QStringLiteral("Ctrl+Shift+V");
+#endif
+}
+}
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -18,7 +30,7 @@ int main(int argc, char* argv[]) {
 #ifdef QUICKQC_VERSION
   app.setApplicationVersion(QStringLiteral(QUICKQC_VERSION));
 #else
-  app.setApplicationVersion(QStringLiteral("0.2.2"));
+  app.setApplicationVersion(QStringLiteral("0.2.3"));
 #endif
 
   const QString instanceServerName = QStringLiteral("com.muyleang.quickqc.instance");
@@ -59,9 +71,18 @@ int main(int argc, char* argv[]) {
 
   QObject::connect(&watcher, &ClipboardWatcher::historyChanged, &window, &MainWindow::scheduleRefresh);
   GlobalHotkey hotkey(&app);
-  if (!hotkey.registerOpenClipboardHotkey()) {
+  QSettings settings;
+  const QString configuredHotkey = settings.value(
+      QStringLiteral("shortcuts/openHotkey"),
+      defaultOpenHotkeyPortable()).toString();
+  if (!hotkey.registerOpenClipboardHotkey(configuredHotkey)) {
     qWarning() << "QuickQC global open hotkey registration failed; in-window shortcut remains available.";
   }
+  QObject::connect(&window, &MainWindow::openHotkeyChanged, &hotkey, [&hotkey](const QString& hotkeyPortableText) {
+    if (!hotkey.registerOpenClipboardHotkey(hotkeyPortableText)) {
+      qWarning() << "QuickQC failed to apply updated global hotkey.";
+    }
+  });
   QObject::connect(&hotkey, &GlobalHotkey::activated, &window, [&window]() {
     QMetaObject::invokeMethod(&window, &MainWindow::showNearCursor, Qt::QueuedConnection);
   });

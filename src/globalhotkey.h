@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QAbstractNativeEventFilter>
+#include <QKeySequence>
 
 #if defined(Q_OS_MAC)
 #include <Carbon/Carbon.h>
@@ -14,7 +15,8 @@ class GlobalHotkey final : public QObject, public QAbstractNativeEventFilter {
   explicit GlobalHotkey(QObject* parent = nullptr);
   ~GlobalHotkey() override;
 
-  bool registerOpenClipboardHotkey();
+  bool registerOpenClipboardHotkey(const QKeySequence& sequence);
+  bool registerOpenClipboardHotkey(const QString& hotkeyPortableText);
   void unregisterOpenClipboardHotkey();
 
   bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override;
@@ -37,4 +39,3 @@ class GlobalHotkey final : public QObject, public QAbstractNativeEventFilter {
   static OSStatus macHotkeyHandler(EventHandlerCallRef nextHandler, EventRef event, void* userData);
 #endif
 };
-

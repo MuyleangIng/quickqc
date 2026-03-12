@@ -33,7 +33,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QKeySequenceEdit>
 #include <QLabel>
+#include <QKeySequence>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
@@ -76,11 +78,25 @@ namespace {
 constexpr const char* kAppDisplayName = "QuickQC";
 constexpr const char* kFounderName = "Ing Muyleang";
 constexpr const char* kReleaseApiUrl = "https://api.github.com/repos/MuyleangIng/quickqc/releases/latest";
+
+QString defaultOpenHotkeyPortable() {
 #if defined(Q_OS_MAC)
-constexpr const char* kOpenHotkeyText = "Cmd+Shift+V";
+  return QStringLiteral("Meta+Shift+V");
 #else
-constexpr const char* kOpenHotkeyText = "Ctrl+Shift+V";
+  return QStringLiteral("Ctrl+Shift+V");
 #endif
+}
+
+QString normalizeHotkeySetting(const QString& raw) {
+  QKeySequence seq = QKeySequence::fromString(raw, QKeySequence::PortableText);
+  if (seq.isEmpty()) {
+    seq = QKeySequence::fromString(raw, QKeySequence::NativeText);
+  }
+  if (seq.isEmpty()) {
+    seq = QKeySequence::fromString(defaultOpenHotkeyPortable(), QKeySequence::PortableText);
+  }
+  return seq.toString(QKeySequence::PortableText);
+}
 
 QString kindText(const ClipKind kind) {
   return kind == ClipKind::Image ? QStringLiteral("image") : QStringLiteral("text");
@@ -541,6 +557,7 @@ MainWindow::MainWindow(ClipStorage* storage, ClipboardWatcher* watcher, QWidget*
       importButton_(nullptr),
       settingsButton_(nullptr),
       clearButton_(nullptr),
+      openShortcut_(nullptr),
       storeSummaryLabel_(nullptr),
       cpuIconLabel_(nullptr),
       cpuSummaryLabel_(nullptr),
@@ -559,7 +576,8 @@ MainWindow::MainWindow(ClipStorage* storage, ClipboardWatcher* watcher, QWidget*
       trayStartupAction_(nullptr),
       trayUpdateAction_(nullptr),
       trayHideAction_(nullptr),
-      trayQuitAction_(nullptr) {
+      trayQuitAction_(nullptr),
+      startupSilentUpdateCheck_(false) {
   Q_ASSERT(storage_ != nullptr);
 
   setWindowTitle(QString::fromUtf8(kAppDisplayName));
@@ -600,6 +618,16 @@ MainWindow::MainWindow(ClipStorage* storage, ClipboardWatcher* watcher, QWidget*
   refresh();
   refreshProcessUsage();
   processUsageTimer_->start();
+
+  if (appSettings_.autoCheckOnStartup) {
+    QTimer::singleShot(2500, this, [this]() {
+      if (!appSettings_.autoCheckOnStartup) {
+        return;
+      }
+      startupSilentUpdateCheck_ = true;
+      onCheckUpdates();
+    });
+  }
 }
 
 MainWindow::~MainWindow() = default;
@@ -621,9 +649,18 @@ void MainWindow::setupUi() {
   auto* title = new QLabel(QString::fromUtf8(kAppDisplayName), central);
   title->setObjectName(QStringLiteral("title"));
 
+  QString openHotkeyLabel = QKeySequence::fromString(
+      appSettings_.openHotkey,
+      QKeySequence::PortableText).toString(QKeySequence::NativeText);
+  if (openHotkeyLabel.trimmed().isEmpty()) {
+    openHotkeyLabel = QKeySequence::fromString(
+        defaultOpenHotkeyPortable(),
+        QKeySequence::PortableText).toString(QKeySequence::NativeText);
+  }
+
   auto* subtitle = new QLabel(
       QStringLiteral("Compact clipboard manager • %1 to open • Esc to close")
-          .arg(QString::fromUtf8(kOpenHotkeyText)),
+          .arg(openHotkeyLabel),
       central);
   subtitle->setObjectName(QStringLiteral("subtitle"));
 
@@ -808,15 +845,10 @@ void MainWindow::showToast(const QString& message, int durationMs) {
 }
 
 void MainWindow::setupShortcuts() {
-  auto* openShortcut = new QShortcut(
-#if defined(Q_OS_MAC)
-      QKeySequence(QStringLiteral("Meta+Shift+V")),
-#else
-      QKeySequence(QStringLiteral("Ctrl+Shift+V")),
-#endif
-      this);
-  openShortcut->setContext(Qt::ApplicationShortcut);
-  connect(openShortcut, &QShortcut::activated, this, &MainWindow::showNearCursor);
+  openShortcut_ = new QShortcut(this);
+  openShortcut_->setContext(Qt::ApplicationShortcut);
+  connect(openShortcut_, &QShortcut::activated, this, &MainWindow::showNearCursor);
+  applyOpenShortcut();
 
   auto* escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
   escShortcut->setContext(Qt::WidgetWithChildrenShortcut);
@@ -849,6 +881,16 @@ void MainWindow::setupShortcuts() {
       deleteClipById(it->id);
     }
   });
+}
+
+void MainWindow::applyOpenShortcut() {
+  if (!openShortcut_) {
+    return;
+  }
+
+  const QString normalized = normalizeHotkeySetting(appSettings_.openHotkey);
+  appSettings_.openHotkey = normalized;
+  openShortcut_->setKey(QKeySequence::fromString(normalized, QKeySequence::PortableText));
 }
 
 void MainWindow::applyStyles() {
@@ -970,6 +1012,9 @@ void MainWindow::loadSettings() {
 
   appSettings_.startAtLogin = settingsStore_.value(QStringLiteral("system/startAtLogin"), false).toBool();
   appSettings_.gpuPreviewEnabled = settingsStore_.value(QStringLiteral("performance/gpuPreviewEnabled"), false).toBool();
+  appSettings_.autoCheckOnStartup = settingsStore_.value(QStringLiteral("updates/autoCheckOnStartup"), true).toBool();
+  appSettings_.openHotkey = normalizeHotkeySetting(
+      settingsStore_.value(QStringLiteral("shortcuts/openHotkey"), defaultOpenHotkeyPortable()).toString());
 
 #if defined(Q_OS_MAC)
   const QFileInfo launchAgent(launchAgentPath());
@@ -985,6 +1030,8 @@ void MainWindow::saveSettings() {
   settingsStore_.setValue(QStringLiteral("appearance/themeMode"), themeModeToString(appSettings_.themeMode));
   settingsStore_.setValue(QStringLiteral("system/startAtLogin"), appSettings_.startAtLogin);
   settingsStore_.setValue(QStringLiteral("performance/gpuPreviewEnabled"), appSettings_.gpuPreviewEnabled);
+  settingsStore_.setValue(QStringLiteral("updates/autoCheckOnStartup"), appSettings_.autoCheckOnStartup);
+  settingsStore_.setValue(QStringLiteral("shortcuts/openHotkey"), normalizeHotkeySetting(appSettings_.openHotkey));
   settingsStore_.sync();
 }
 
@@ -1674,7 +1721,7 @@ void MainWindow::openSettingsDialog() {
   QDialog dialog(this, Qt::Dialog | Qt::WindowTitleHint | Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint);
   dialog.setWindowTitle(QStringLiteral("Settings"));
   dialog.setWindowModality(Qt::ApplicationModal);
-  dialog.resize(440, 360);
+  dialog.resize(460, 420);
   centerDialogOnScreen(&dialog, this);
 
   auto* root = new QVBoxLayout(&dialog);
@@ -1750,6 +1797,20 @@ void MainWindow::openSettingsDialog() {
   auto* startupCheck = new QCheckBox(QStringLiteral("Start app when I log in"), &dialog);
   startupCheck->setChecked(appSettings_.startAtLogin);
 
+  auto* startupUpdateCheck = new QCheckBox(QStringLiteral("Check for updates on startup"), &dialog);
+  startupUpdateCheck->setChecked(appSettings_.autoCheckOnStartup);
+
+  auto* hotkeyRow = new QHBoxLayout();
+  auto* hotkeyLabel = new QLabel(QStringLiteral("Open app hotkey"), &dialog);
+  auto* hotkeyEdit = new QKeySequenceEdit(&dialog);
+  hotkeyEdit->setMaximumSequenceLength(1);
+  hotkeyEdit->setKeySequence(QKeySequence::fromString(
+      appSettings_.openHotkey,
+      QKeySequence::PortableText));
+  hotkeyRow->addWidget(hotkeyLabel);
+  hotkeyRow->addStretch();
+  hotkeyRow->addWidget(hotkeyEdit);
+
   auto* gpuCheck = new QCheckBox(QStringLiteral("Enable GPU image preview (experimental)"), &dialog);
   gpuCheck->setChecked(appSettings_.gpuPreviewEnabled && gpuInfo_.supported);
   gpuCheck->setEnabled(gpuInfo_.supported);
@@ -1775,6 +1836,8 @@ void MainWindow::openSettingsDialog() {
   root->addLayout(delayRow);
   root->addLayout(themeRow);
   root->addWidget(startupCheck);
+  root->addWidget(startupUpdateCheck);
+  root->addLayout(hotkeyRow);
   root->addWidget(gpuCheck);
   root->addWidget(gpuInfoLabel);
   root->addWidget(versionFounder);
@@ -1787,11 +1850,15 @@ void MainWindow::openSettingsDialog() {
   }
 
   AppSettingsData next = appSettings_;
+  const QString previousHotkey = appSettings_.openHotkey;
   next.autoCloseOnCopy = autoCloseCheck->isChecked();
   next.autoCloseDelayMs = static_cast<int>(delaySpin->value() * 1000.0);
   if (QAbstractButton* checkedThemeBtn = themeBtnGroup->checkedButton()) {
     next.themeMode = static_cast<ThemeMode>(themeBtnGroup->id(checkedThemeBtn));
   }
+  next.autoCheckOnStartup = startupUpdateCheck->isChecked();
+  next.openHotkey = normalizeHotkeySetting(
+      hotkeyEdit->keySequence().toString(QKeySequence::PortableText));
   next.gpuPreviewEnabled = gpuCheck->isChecked() && gpuInfo_.supported;
 
   const bool requestedStartup = startupCheck->isChecked();
@@ -1807,6 +1874,10 @@ void MainWindow::openSettingsDialog() {
 
   appSettings_ = next;
   saveSettings();
+  applyOpenShortcut();
+  if (appSettings_.openHotkey != previousHotkey) {
+    emit openHotkeyChanged(appSettings_.openHotkey);
+  }
   applyStyles();
   rebuildTrayMenu();
   refreshStats();
@@ -1929,14 +2000,19 @@ void MainWindow::onOpenSettings() {
 }
 
 void MainWindow::onCheckUpdates() {
-  if (!isVisible()) {
-    showNearCursor();
-  } else {
-    if (isMinimized()) {
-      showNormal();
+  const bool startupSilentCheck = startupSilentUpdateCheck_;
+  startupSilentUpdateCheck_ = false;
+
+  if (!startupSilentCheck) {
+    if (!isVisible()) {
+      showNearCursor();
+    } else {
+      if (isMinimized()) {
+        showNormal();
+      }
+      raise();
+      activateWindow();
     }
-    raise();
-    activateWindow();
   }
 
   enum class UpdateChoice {
@@ -1999,13 +2075,14 @@ void MainWindow::onCheckUpdates() {
     userLoop.exec();
   };
 
-  clearDialogButtons();
-  addDialogButton(QStringLiteral("Cancel"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-
-  dialog.show();
-  dialog.raise();
-  dialog.activateWindow();
-  qApp->processEvents();
+  if (!startupSilentCheck) {
+    clearDialogButtons();
+    addDialogButton(QStringLiteral("Cancel"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+    dialog.show();
+    dialog.raise();
+    dialog.activateWindow();
+    qApp->processEvents();
+  }
 
   QNetworkAccessManager networkManager;
   const QString userAgent = QStringLiteral("quickqc/%1").arg(versionString());
@@ -2038,7 +2115,7 @@ void MainWindow::onCheckUpdates() {
   loop.exec();
   progressBar->hide();
 
-  if (!dialog.isVisible()) {
+  if (!startupSilentCheck && !dialog.isVisible()) {
     reply->deleteLater();
     statusLabel_->setText(QStringLiteral("Update check canceled."));
     return;
@@ -2060,11 +2137,13 @@ void MainWindow::onCheckUpdates() {
       message = QStringLiteral("Update check timed out.");
     }
 
-    titleLabel->setText(QStringLiteral("Could not check updates"));
-    detailLabel->setText(message);
-    clearDialogButtons();
-    addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-    waitForDialogClose();
+    if (!startupSilentCheck) {
+      titleLabel->setText(QStringLiteral("Could not check updates"));
+      detailLabel->setText(message);
+      clearDialogButtons();
+      addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+      waitForDialogClose();
+    }
     statusLabel_->setText(message);
     return;
   }
@@ -2073,11 +2152,13 @@ void MainWindow::onCheckUpdates() {
   const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
   if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
     const QString message = QStringLiteral("Received invalid update metadata.");
-    titleLabel->setText(QStringLiteral("Could not check updates"));
-    detailLabel->setText(message);
-    clearDialogButtons();
-    addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-    waitForDialogClose();
+    if (!startupSilentCheck) {
+      titleLabel->setText(QStringLiteral("Could not check updates"));
+      detailLabel->setText(message);
+      clearDialogButtons();
+      addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+      waitForDialogClose();
+    }
     statusLabel_->setText(message);
     return;
   }
@@ -2089,11 +2170,13 @@ void MainWindow::onCheckUpdates() {
 
   if (latestVersion.isEmpty()) {
     const QString message = QStringLiteral("Update metadata is missing a release version.");
-    titleLabel->setText(QStringLiteral("Could not check updates"));
-    detailLabel->setText(message);
-    clearDialogButtons();
-    addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-    waitForDialogClose();
+    if (!startupSilentCheck) {
+      titleLabel->setText(QStringLiteral("Could not check updates"));
+      detailLabel->setText(message);
+      clearDialogButtons();
+      addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+      waitForDialogClose();
+    }
     statusLabel_->setText(message);
     return;
   }
@@ -2101,6 +2184,20 @@ void MainWindow::onCheckUpdates() {
   const int versionCmp = compareVersions(currentVersion, latestVersion);
 
   if (versionCmp < 0) {
+    if (startupSilentCheck) {
+      const QString message = QStringLiteral("Update available: %1.").arg(latestVersion);
+      if (tray_) {
+        tray_->showMessage(
+            QStringLiteral("QuickQC Update"),
+            QStringLiteral("Version %1 is available. Open Settings to update.")
+                .arg(latestVersion),
+            QSystemTrayIcon::Information,
+            10000);
+      }
+      statusLabel_->setText(message);
+      return;
+    }
+
     titleLabel->setText(QStringLiteral("Update available"));
     detailLabel->setText(
         QStringLiteral("Latest version: %1\nCurrent version: %2\n\nDownload and install this update now?")
@@ -2163,6 +2260,11 @@ void MainWindow::onCheckUpdates() {
   }
 
   if (versionCmp == 0) {
+    if (startupSilentCheck) {
+      statusLabel_->setText(QStringLiteral("Already on latest version (%1).").arg(currentVersion));
+      return;
+    }
+
     titleLabel->setText(QStringLiteral("You're up to date"));
     detailLabel->setText(
         QStringLiteral("Current version: %1\nLatest version: %2")
@@ -2174,13 +2276,15 @@ void MainWindow::onCheckUpdates() {
     return;
   }
 
-  titleLabel->setText(QStringLiteral("Running newer build"));
-  detailLabel->setText(
-      QStringLiteral("Current version: %1\nLatest public release: %2")
-          .arg(currentVersion, latestVersion));
-  clearDialogButtons();
-  addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
-  waitForDialogClose();
+  if (!startupSilentCheck) {
+    titleLabel->setText(QStringLiteral("Running newer build"));
+    detailLabel->setText(
+        QStringLiteral("Current version: %1\nLatest public release: %2")
+            .arg(currentVersion, latestVersion));
+    clearDialogButtons();
+    addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+    waitForDialogClose();
+  }
   statusLabel_->setText(QStringLiteral("Running newer build (%1).").arg(currentVersion));
 }
 

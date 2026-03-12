@@ -4,6 +4,18 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.3] - 2026-03-12
+
+### Added
+
+- Added `Check for updates on startup` option in Settings.
+- Added customizable open hotkey in Settings with one-key-sequence capture.
+- Global hotkey registration now reloads live when open hotkey is changed in Settings.
+
+### Changed
+
+- Startup update check now runs in silent mode and shows tray notification only when an update is available.
+
 ## [0.2.2] - 2026-03-12
 
 ### Changed
