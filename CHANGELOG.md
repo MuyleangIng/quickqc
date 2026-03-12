@@ -4,6 +4,13 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.1] - 2026-03-12
+
+### Fixed
+
+- Fixed in-app update download flow incorrectly reporting `Update download canceled.` when closing the progress dialog after a successful transfer.
+- Improved cancellation handling so only true user-triggered cancel actions are treated as canceled downloads.
+
 ## [0.2.0] - 2026-03-12
 
 ### Added

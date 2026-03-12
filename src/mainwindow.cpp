@@ -244,7 +244,7 @@ bool downloadFileWithProgress(
   bool canceled = false;
   bool timedOut = false;
 
-  QObject::connect(&progress, &QProgressDialog::canceled, parent, [reply, &canceled]() {
+  const QMetaObject::Connection cancelConnection = QObject::connect(&progress, &QProgressDialog::canceled, parent, [reply, &canceled]() {
     canceled = true;
     if (reply && reply->isRunning()) {
       reply->abort();
@@ -275,6 +275,8 @@ bool downloadFileWithProgress(
   timeoutTimer.start();
   progress.show();
   loop.exec();
+  const bool userCanceled = canceled;
+  QObject::disconnect(cancelConnection);
 
   const QByteArray remaining = reply->readAll();
   if (!remaining.isEmpty()) {
@@ -283,13 +285,13 @@ bool downloadFileWithProgress(
 
   output.flush();
   output.close();
-  progress.close();
+  progress.hide();
 
   const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
   const QNetworkReply::NetworkError networkError = reply->error();
   reply->deleteLater();
 
-  if (canceled) {
+  if (userCanceled) {
     QFile::remove(outputPath);
     if (errorMessage) {
       *errorMessage = QStringLiteral("Update download canceled.");
