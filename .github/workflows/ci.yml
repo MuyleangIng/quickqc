@@ -41,13 +41,13 @@ jobs:
           - id: windows-amd64
             runner: windows-latest
             qt_host: windows
-            qt_target: win64_msvc2022_64
-            qt_prefix: msvc2022_64
+            qt_target: win64_msvc2019_64
+            qt_prefix: msvc2019_64
           - id: windows-arm64
             runner: windows-11-arm
             qt_host: windows
-            qt_target: win64_msvc2022_arm64
-            qt_prefix: msvc2022_arm64
+            qt_target: win64_msvc2019_arm64
+            qt_prefix: msvc2019_arm64
             experimental: true
 
     steps:
@@ -101,6 +101,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install aqtinstall==3.2.1
+          if [ "${{ matrix.id }}" = "windows-arm64" ]; then
+            python -m aqt install-qt windows desktop 6.7.3 win64_msvc2019_64 --outputdir qt6
+          fi
           python -m aqt install-qt ${{ matrix.qt_host }} desktop 6.7.3 ${{ matrix.qt_target }} --outputdir qt6
 
       - name: Export Qt path (macOS)
@@ -111,7 +114,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          "CMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE\qt6\6.7.3\${{ matrix.qt_prefix }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ('${{ matrix.id }}' -eq 'windows-arm64') {
+            "CMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE\qt6\6.7.3\msvc2019_arm64;$env:GITHUB_WORKSPACE\qt6\6.7.3\msvc2019_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            "CMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE\qt6\6.7.3\${{ matrix.qt_prefix }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
