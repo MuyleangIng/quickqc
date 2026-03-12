@@ -4,6 +4,15 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.1.10] - 2026-03-12
+
+### Fixed
+
+- Tray `Check Updates` now runs reliably by deferring action execution until after the tray menu closes.
+- Tray `Open Settings` now opens more reliably with proper focus/order.
+- Settings dialog positioning now clamps to the active screen to avoid partial/off-screen rendering.
+- Update-check dialog now opens centered and in front consistently when triggered from tray.
+
 ## [0.1.9] - 2026-03-12
 
 ### Fixed

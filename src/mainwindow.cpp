@@ -159,6 +159,38 @@ QString releaseAssetUrlForCurrentPlatform(const QJsonObject& releaseObject) {
   return QString();
 }
 
+void centerDialogOnScreen(QDialog* dialog, const QWidget* anchor) {
+  if (!dialog) {
+    return;
+  }
+
+  QRect anchorRect;
+  if (anchor) {
+    anchorRect = anchor->frameGeometry();
+  } else {
+    const QPoint cursor = QCursor::pos();
+    anchorRect = QRect(cursor, QSize(1, 1));
+  }
+
+  QScreen* screen = QGuiApplication::screenAt(anchorRect.center());
+  if (!screen) {
+    screen = QGuiApplication::primaryScreen();
+  }
+  if (!screen) {
+    return;
+  }
+
+  const QRect area = screen->availableGeometry();
+  const QSize size = dialog->size();
+
+  int x = anchorRect.center().x() - (size.width() / 2);
+  int y = anchorRect.center().y() - (size.height() / 2);
+
+  x = std::clamp(x, area.left(), std::max(area.left(), area.right() - size.width()));
+  y = std::clamp(y, area.top(), std::max(area.top(), area.bottom() - size.height()));
+  dialog->move(x, y);
+}
+
 bool downloadFileWithProgress(
     QWidget* parent,
     const QUrl& url,
@@ -689,8 +721,13 @@ void MainWindow::setupTray() {
   trayHideAction_ = trayMenu_->addAction(QStringLiteral("Hide"));
   trayQuitAction_ = trayMenu_->addAction(QStringLiteral("Quit"));
 
-  connect(trayOpenClipboardAction_, &QAction::triggered, this, &MainWindow::showNearCursor);
-  connect(trayOpenSettingsAction_, &QAction::triggered, this, &MainWindow::onOpenSettings);
+  // Delay tray actions one event-cycle so the native tray menu fully closes first.
+  connect(trayOpenClipboardAction_, &QAction::triggered, this, [this]() {
+    QTimer::singleShot(0, this, &MainWindow::showNearCursor);
+  });
+  connect(trayOpenSettingsAction_, &QAction::triggered, this, [this]() {
+    QTimer::singleShot(0, this, &MainWindow::onOpenSettings);
+  });
 
   connect(trayAutoCloseAction_, &QAction::toggled, this, [this](const bool checked) {
     appSettings_.autoCloseOnCopy = checked;
@@ -713,7 +750,9 @@ void MainWindow::setupTray() {
                                   : QStringLiteral("Start at login disabled."));
   });
 
-  connect(trayUpdateAction_, &QAction::triggered, this, &MainWindow::onCheckUpdates);
+  connect(trayUpdateAction_, &QAction::triggered, this, [this]() {
+    QTimer::singleShot(0, this, &MainWindow::onCheckUpdates);
+  });
   connect(trayHideAction_, &QAction::triggered, this, &MainWindow::hide);
   connect(trayQuitAction_, &QAction::triggered, qApp, &QApplication::quit);
   connect(trayMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildTrayMenu);
@@ -1614,12 +1653,11 @@ void MainWindow::refreshStats() {
 }
 
 void MainWindow::openSettingsDialog() {
-  QDialog dialog(this);
+  QDialog dialog(this, Qt::Dialog | Qt::WindowTitleHint | Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint);
   dialog.setWindowTitle(QStringLiteral("Settings"));
   dialog.setWindowModality(Qt::ApplicationModal);
-  dialog.setWindowFlag(Qt::Sheet, false);
-  dialog.setWindowFlag(Qt::WindowCloseButtonHint, true);
   dialog.resize(440, 360);
+  centerDialogOnScreen(&dialog, this);
 
   auto* root = new QVBoxLayout(&dialog);
   root->setContentsMargins(12, 12, 12, 12);
@@ -1873,6 +1911,16 @@ void MainWindow::onOpenSettings() {
 }
 
 void MainWindow::onCheckUpdates() {
+  if (!isVisible()) {
+    showNearCursor();
+  } else {
+    if (isMinimized()) {
+      showNormal();
+    }
+    raise();
+    activateWindow();
+  }
+
   enum class UpdateChoice {
     None,
     Close,
@@ -1880,12 +1928,11 @@ void MainWindow::onCheckUpdates() {
     DownloadInstall,
   };
 
-  QDialog dialog(this);
+  QDialog dialog(this, Qt::Dialog | Qt::WindowTitleHint | Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint);
   dialog.setWindowTitle(QStringLiteral("Update Check"));
   dialog.setWindowModality(Qt::ApplicationModal);
-  dialog.setWindowFlag(Qt::Sheet, false);
-  dialog.setWindowFlag(Qt::WindowCloseButtonHint, true);
-  dialog.setMinimumWidth(430);
+  dialog.resize(430, 190);
+  centerDialogOnScreen(&dialog, this);
 
   auto* root = new QVBoxLayout(&dialog);
   root->setContentsMargins(14, 14, 14, 14);
