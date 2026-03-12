@@ -31,6 +31,7 @@ class ClipStorage {
 
   QList<ClipItem> history(const QString& query, int limit = 80) const;
   std::optional<ClipItem> getClipById(const QString& id) const;
+  QList<ClipItem> allClipsForBackup() const;
   bool insertText(const QString& text);
   bool insertImage(const QByteArray& pngData, const QString& imageName, const QString& sourcePath = QString());
 
@@ -40,6 +41,7 @@ class ClipStorage {
   bool setTags(const QString& id, const QStringList& tags);
   bool updateClipText(const QString& id, const QString& text);
   bool renameClipImage(const QString& id, const QString& imageName);
+  bool replaceAllFromBackup(const QList<ClipItem>& items);
   StorageStats stats() const;
 
  private:

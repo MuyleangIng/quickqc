@@ -12,6 +12,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QCursor>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -54,11 +55,13 @@
 #include <QProgressBar>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QShortcut>
+#include <QStandardPaths>
 #include <QStyle>
 #include <QSurfaceFormat>
 #include <QSysInfo>
@@ -167,14 +170,25 @@ QString releaseAssetNameForCurrentPlatform() {
     return QStringLiteral("quickqc-macos-arm64.tar.gz");
   }
   return QStringLiteral("quickqc-macos-amd64.tar.gz");
+#elif defined(Q_OS_WIN)
+  const QString arch = QSysInfo::currentCpuArchitecture().toLower();
+  if (arch.contains(QStringLiteral("arm")) || arch.contains(QStringLiteral("aarch64"))) {
+    return QStringLiteral("quickqc-windows-arm64.zip");
+  }
+  return QStringLiteral("quickqc-windows-amd64.zip");
+#elif defined(Q_OS_LINUX)
+  const QString arch = QSysInfo::currentCpuArchitecture().toLower();
+  if (arch.contains(QStringLiteral("arm")) || arch.contains(QStringLiteral("aarch64"))) {
+    return QStringLiteral("quickqc-linux-ubuntu-arm64.tar.gz");
+  }
+  return QStringLiteral("quickqc-linux-ubuntu-amd64.tar.gz");
 #else
   return QString();
 #endif
 }
 
-QString releaseAssetUrlForCurrentPlatform(const QJsonObject& releaseObject) {
-  const QString expectedName = releaseAssetNameForCurrentPlatform();
-  if (expectedName.isEmpty()) {
+QString releaseAssetUrlByName(const QJsonObject& releaseObject, const QString& expectedName) {
+  if (expectedName.trimmed().isEmpty()) {
     return QString();
   }
 
@@ -188,6 +202,93 @@ QString releaseAssetUrlForCurrentPlatform(const QJsonObject& releaseObject) {
   }
 
   return QString();
+}
+
+QString releaseChecksumsAssetName() {
+  return QStringLiteral("quickqc-checksums.txt");
+}
+
+QString checksumForAssetFromManifest(const QString& manifest, const QString& assetName) {
+  if (manifest.trimmed().isEmpty() || assetName.trimmed().isEmpty()) {
+    return QString();
+  }
+
+  static const QRegularExpression linePattern(
+      QStringLiteral("^\\s*([A-Fa-f0-9]{64})\\s+\\*?(.+?)\\s*$"));
+
+  const QStringList lines = manifest.split('\n');
+  for (const QString& line : lines) {
+    const QRegularExpressionMatch match = linePattern.match(line);
+    if (!match.hasMatch()) {
+      continue;
+    }
+
+    const QString listedFile = match.captured(2).trimmed();
+    if (listedFile == assetName) {
+      return match.captured(1).toLower();
+    }
+  }
+
+  return QString();
+}
+
+bool downloadTextWithTimeout(
+    const QUrl& url,
+    const QString& userAgent,
+    int timeoutMs,
+    QString* responseText,
+    QString* errorMessage) {
+  if (!url.isValid()) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Invalid URL.");
+    }
+    return false;
+  }
+
+  QNetworkAccessManager manager;
+  QNetworkRequest request(url);
+  request.setHeader(QNetworkRequest::UserAgentHeader, userAgent);
+
+  QNetworkReply* reply = manager.get(request);
+  QEventLoop loop;
+  QTimer timeoutTimer;
+  timeoutTimer.setSingleShot(true);
+  timeoutTimer.setInterval(std::max(1000, timeoutMs));
+
+  bool timedOut = false;
+  QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, [&]() {
+    timedOut = true;
+    if (reply && reply->isRunning()) {
+      reply->abort();
+    }
+  });
+  QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+  timeoutTimer.start();
+  loop.exec();
+
+  const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+  const QNetworkReply::NetworkError networkError = reply->error();
+  const QByteArray payload = reply->readAll();
+  reply->deleteLater();
+
+  if (networkError != QNetworkReply::NoError) {
+    if (errorMessage) {
+      if (timedOut || networkError == QNetworkReply::TimeoutError) {
+        *errorMessage = QStringLiteral("Request timed out.");
+      } else if (statusCode == 404) {
+        *errorMessage = QStringLiteral("Requested file was not found.");
+      } else {
+        *errorMessage = QStringLiteral("Request failed.");
+      }
+    }
+    return false;
+  }
+
+  if (responseText) {
+    *responseText = QString::fromUtf8(payload);
+  }
+  return true;
 }
 
 void centerDialogOnScreen(QDialog* dialog, const QWidget* anchor) {
@@ -227,6 +328,7 @@ bool downloadFileWithProgress(
     const QUrl& url,
     const QString& userAgent,
     const QString& outputPath,
+    const QString& expectedSha256,
     QString* errorMessage) {
   if (!url.isValid()) {
     if (errorMessage) {
@@ -269,6 +371,7 @@ bool downloadFileWithProgress(
 
   bool canceled = false;
   bool timedOut = false;
+  QCryptographicHash hash(QCryptographicHash::Sha256);
 
   const QMetaObject::Connection cancelConnection = QObject::connect(&progress, &QProgressDialog::canceled, parent, [reply, &canceled]() {
     canceled = true;
@@ -282,10 +385,11 @@ bool downloadFileWithProgress(
       reply->abort();
     }
   });
-  QObject::connect(reply, &QNetworkReply::readyRead, parent, [reply, &output]() {
+  QObject::connect(reply, &QNetworkReply::readyRead, parent, [reply, &output, &hash]() {
     const QByteArray data = reply->readAll();
     if (!data.isEmpty()) {
       output.write(data);
+      hash.addData(data);
     }
   });
   QObject::connect(reply, &QNetworkReply::downloadProgress, parent, [&progress](const qint64 received, const qint64 total) {
@@ -307,6 +411,7 @@ bool downloadFileWithProgress(
   const QByteArray remaining = reply->readAll();
   if (!remaining.isEmpty()) {
     output.write(remaining);
+    hash.addData(remaining);
   }
 
   output.flush();
@@ -339,10 +444,70 @@ bool downloadFileWithProgress(
     return false;
   }
 
+  const QString expected = expectedSha256.trimmed().toLower();
+  if (!expected.isEmpty()) {
+    const QString actual = QString::fromLatin1(hash.result().toHex()).toLower();
+    if (actual != expected) {
+      QFile::remove(outputPath);
+      if (errorMessage) {
+        *errorMessage = QStringLiteral("Update package checksum mismatch. Install aborted.");
+      }
+      return false;
+    }
+  }
+
   return true;
 }
 
 bool extractArchiveToDirectory(const QString& archivePath, const QString& destinationDir, QString* errorMessage) {
+#if defined(Q_OS_WIN)
+  const QString lowerPath = archivePath.toLower();
+  if (lowerPath.endsWith(QStringLiteral(".zip"))) {
+    QProcess unzip;
+    unzip.start(
+        QStringLiteral("powershell"),
+        {
+            QStringLiteral("-NoProfile"),
+            QStringLiteral("-ExecutionPolicy"),
+            QStringLiteral("Bypass"),
+            QStringLiteral("-Command"),
+            QStringLiteral("Expand-Archive -Path $args[0] -DestinationPath $args[1] -Force"),
+            archivePath,
+            destinationDir,
+        });
+
+    if (!unzip.waitForStarted(5000)) {
+      if (errorMessage) {
+        *errorMessage = QStringLiteral("Failed to start ZIP extraction.");
+      }
+      return false;
+    }
+
+    if (!unzip.waitForFinished(180000)) {
+      unzip.kill();
+      unzip.waitForFinished();
+      if (errorMessage) {
+        *errorMessage = QStringLiteral("Timed out while extracting update package.");
+      }
+      return false;
+    }
+
+    if (unzip.exitStatus() != QProcess::NormalExit || unzip.exitCode() != 0) {
+      if (errorMessage) {
+        const QString stderrOut = QString::fromUtf8(unzip.readAllStandardError()).trimmed();
+        const QString stdoutOut = QString::fromUtf8(unzip.readAllStandardOutput()).trimmed();
+        const QString detail = !stderrOut.isEmpty() ? stderrOut : stdoutOut;
+        *errorMessage = detail.isEmpty()
+                            ? QStringLiteral("Failed to extract update package.")
+                            : detail;
+      }
+      return false;
+    }
+
+    return true;
+  }
+#endif
+
   QProcess tar;
   tar.start(
       QStringLiteral("tar"),
@@ -381,12 +546,14 @@ bool stageMacUpdate(
     QWidget* parent,
     const QString& assetUrl,
     const QString& userAgent,
+    const QString& expectedSha256,
     QString* stagedAppPath,
     QString* errorMessage) {
 #if !defined(Q_OS_MAC)
   Q_UNUSED(parent);
   Q_UNUSED(assetUrl);
   Q_UNUSED(userAgent);
+  Q_UNUSED(expectedSha256);
   Q_UNUSED(stagedAppPath);
   if (errorMessage) {
     *errorMessage = QStringLiteral("Automatic update installation is supported on macOS only.");
@@ -403,7 +570,7 @@ bool stageMacUpdate(
   }
 
   const QString archivePath = QDir(stagingRoot).filePath(QStringLiteral("quickqc-update.tar.gz"));
-  if (!downloadFileWithProgress(parent, QUrl(assetUrl), userAgent, archivePath, errorMessage)) {
+  if (!downloadFileWithProgress(parent, QUrl(assetUrl), userAgent, archivePath, expectedSha256, errorMessage)) {
     return false;
   }
 
@@ -435,9 +602,158 @@ bool stageMacUpdate(
 #endif
 }
 
-bool launchMacInstallHelper(const QString& stagedAppPath, const bool relaunchAfterInstall, QString* errorMessage) {
+bool stageLinuxUpdate(
+    QWidget* parent,
+    const QString& assetUrl,
+    const QString& userAgent,
+    const QString& expectedSha256,
+    QString* stagedBinaryPath,
+    QString* errorMessage) {
+#if !defined(Q_OS_LINUX)
+  Q_UNUSED(parent);
+  Q_UNUSED(assetUrl);
+  Q_UNUSED(userAgent);
+  Q_UNUSED(expectedSha256);
+  Q_UNUSED(stagedBinaryPath);
+  if (errorMessage) {
+    *errorMessage = QStringLiteral("Automatic update installation is supported on Linux only.");
+  }
+  return false;
+#else
+  const QString stagingRoot = QDir::temp().filePath(
+      QStringLiteral("quickqc-update-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+  if (!QDir().mkpath(stagingRoot)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to create update staging directory.");
+    }
+    return false;
+  }
+
+  const QString archivePath = QDir(stagingRoot).filePath(QStringLiteral("quickqc-update.tar.gz"));
+  if (!downloadFileWithProgress(parent, QUrl(assetUrl), userAgent, archivePath, expectedSha256, errorMessage)) {
+    return false;
+  }
+
+  const QString extractDir = QDir(stagingRoot).filePath(QStringLiteral("extract"));
+  if (!QDir().mkpath(extractDir)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to prepare extracted update folder.");
+    }
+    return false;
+  }
+
+  if (!extractArchiveToDirectory(archivePath, extractDir, errorMessage)) {
+    return false;
+  }
+
+  const QString binaryPath = QDir(extractDir).filePath(QStringLiteral("quickqc"));
+  const QFileInfo binaryInfo(binaryPath);
+  if (!binaryInfo.exists() || !binaryInfo.isFile()) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Downloaded package does not contain quickqc binary.");
+    }
+    return false;
+  }
+
+  if (stagedBinaryPath) {
+    *stagedBinaryPath = binaryPath;
+  }
+  return true;
+#endif
+}
+
+bool stageWindowsUpdate(
+    QWidget* parent,
+    const QString& assetUrl,
+    const QString& userAgent,
+    const QString& expectedSha256,
+    QString* stagedExePath,
+    QString* errorMessage) {
+#if !defined(Q_OS_WIN)
+  Q_UNUSED(parent);
+  Q_UNUSED(assetUrl);
+  Q_UNUSED(userAgent);
+  Q_UNUSED(expectedSha256);
+  Q_UNUSED(stagedExePath);
+  if (errorMessage) {
+    *errorMessage = QStringLiteral("Automatic update installation is supported on Windows only.");
+  }
+  return false;
+#else
+  const QString stagingRoot = QDir::temp().filePath(
+      QStringLiteral("quickqc-update-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+  if (!QDir().mkpath(stagingRoot)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to create update staging directory.");
+    }
+    return false;
+  }
+
+  const QString archivePath = QDir(stagingRoot).filePath(QStringLiteral("quickqc-update.zip"));
+  if (!downloadFileWithProgress(parent, QUrl(assetUrl), userAgent, archivePath, expectedSha256, errorMessage)) {
+    return false;
+  }
+
+  const QString extractDir = QDir(stagingRoot).filePath(QStringLiteral("extract"));
+  if (!QDir().mkpath(extractDir)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to prepare extracted update folder.");
+    }
+    return false;
+  }
+
+  if (!extractArchiveToDirectory(archivePath, extractDir, errorMessage)) {
+    return false;
+  }
+
+  const QString candidate1 = QDir(extractDir).filePath(QStringLiteral("quickqc.exe"));
+  const QString candidate2 = QDir(extractDir).filePath(QStringLiteral("Release/quickqc.exe"));
+  QString selected;
+  if (QFileInfo::exists(candidate1)) {
+    selected = candidate1;
+  } else if (QFileInfo::exists(candidate2)) {
+    selected = candidate2;
+  }
+
+  if (selected.isEmpty()) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Downloaded package does not contain quickqc.exe.");
+    }
+    return false;
+  }
+
+  if (stagedExePath) {
+    *stagedExePath = selected;
+  }
+  return true;
+#endif
+}
+
+QString currentMacAppBundlePath() {
+#if !defined(Q_OS_MAC)
+  return QString();
+#else
+  QDir dir = QFileInfo(QCoreApplication::applicationFilePath()).dir();
+  if (dir.dirName() == QStringLiteral("MacOS")) {
+    if (dir.cdUp() && dir.dirName() == QStringLiteral("Contents") && dir.cdUp()) {
+      const QString path = dir.absolutePath();
+      if (path.endsWith(QStringLiteral(".app"), Qt::CaseInsensitive)) {
+        return path;
+      }
+    }
+  }
+  return QStringLiteral("/Applications/quickqc.app");
+#endif
+}
+
+bool launchMacInstallHelper(
+    const QString& stagedAppPath,
+    const QString& preferredTargetPath,
+    const bool relaunchAfterInstall,
+    QString* errorMessage) {
 #if !defined(Q_OS_MAC)
   Q_UNUSED(stagedAppPath);
+  Q_UNUSED(preferredTargetPath);
   Q_UNUSED(relaunchAfterInstall);
   if (errorMessage) {
     *errorMessage = QStringLiteral("Automatic update installation is supported on macOS only.");
@@ -466,18 +782,30 @@ bool launchMacInstallHelper(const QString& stagedAppPath, const bool relaunchAft
   out << "set -eu\n";
   out << "PID=\"$1\"\n";
   out << "SRC_APP=\"$2\"\n";
-  out << "RELAUNCH=\"$3\"\n";
+  out << "PREFERRED_DEST=\"$3\"\n";
+  out << "RELAUNCH=\"$4\"\n";
   out << "install_to() {\n";
   out << "  DEST=\"$1\"\n";
   out << "  DEST_NEW=\"${DEST}.new\"\n";
+  out << "  DEST_BACKUP=\"${DEST}.backup\"\n";
   out << "  mkdir -p \"$(dirname \"$DEST\")\"\n";
   out << "  rm -rf \"$DEST_NEW\"\n";
+  out << "  rm -rf \"$DEST_BACKUP\"\n";
   out << "  if cp -R \"$SRC_APP\" \"$DEST_NEW\"; then\n";
+  out << "    if [ -d \"$DEST\" ]; then\n";
+  out << "      mv \"$DEST\" \"$DEST_BACKUP\" || true\n";
+  out << "    fi\n";
+  out << "    if mv \"$DEST_NEW\" \"$DEST\"; then\n";
+  out << "      rm -rf \"$DEST_BACKUP\"\n";
+  out << "      echo \"$DEST\"\n";
+  out << "      return 0\n";
+  out << "    fi\n";
   out << "    rm -rf \"$DEST\"\n";
-  out << "    mv \"$DEST_NEW\" \"$DEST\"\n";
-  out << "    echo \"$DEST\"\n";
-  out << "    return 0\n";
+  out << "    if [ -d \"$DEST_BACKUP\" ]; then mv \"$DEST_BACKUP\" \"$DEST\" || true; fi\n";
+  out << "    rm -rf \"$DEST_NEW\"\n";
+  out << "    return 1\n";
   out << "  fi\n";
+  out << "  rm -rf \"$DEST_BACKUP\"\n";
   out << "  rm -rf \"$DEST_NEW\"\n";
   out << "  return 1\n";
   out << "}\n";
@@ -485,7 +813,9 @@ bool launchMacInstallHelper(const QString& stagedAppPath, const bool relaunchAft
   out << "  sleep 0.25\n";
   out << "done\n";
   out << "INSTALLED=\"\"\n";
-  out << "if INSTALLED=$(install_to \"/Applications/quickqc.app\"); then\n";
+  out << "if [ -n \"$PREFERRED_DEST\" ] && INSTALLED=$(install_to \"$PREFERRED_DEST\"); then\n";
+  out << "  :\n";
+  out << "elif INSTALLED=$(install_to \"/Applications/quickqc.app\"); then\n";
   out << "  :\n";
   out << "elif INSTALLED=$(install_to \"$HOME/Applications/quickqc.app\"); then\n";
   out << "  :\n";
@@ -511,6 +841,7 @@ bool launchMacInstallHelper(const QString& stagedAppPath, const bool relaunchAft
       scriptPath,
       QString::number(QCoreApplication::applicationPid()),
       stagedAppPath,
+      preferredTargetPath,
       relaunchAfterInstall ? QStringLiteral("1") : QStringLiteral("0"),
   };
   if (!QProcess::startDetached(QStringLiteral("/bin/sh"), args)) {
@@ -521,6 +852,244 @@ bool launchMacInstallHelper(const QString& stagedAppPath, const bool relaunchAft
   }
 
   return true;
+#endif
+}
+
+bool launchLinuxInstallHelper(
+    const QString& stagedBinaryPath,
+    const QString& targetBinaryPath,
+    const bool relaunchAfterInstall,
+    QString* errorMessage) {
+#if !defined(Q_OS_LINUX)
+  Q_UNUSED(stagedBinaryPath);
+  Q_UNUSED(targetBinaryPath);
+  Q_UNUSED(relaunchAfterInstall);
+  if (errorMessage) {
+    *errorMessage = QStringLiteral("Automatic update installation is supported on Linux only.");
+  }
+  return false;
+#else
+  const QFileInfo stagedInfo(stagedBinaryPath);
+  if (!stagedInfo.exists() || !stagedInfo.isFile()) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Staged update binary is missing.");
+    }
+    return false;
+  }
+
+  const QString scriptPath = QDir(stagedInfo.absolutePath()).filePath(QStringLiteral("quickqc-install-update.sh"));
+  QFile script(scriptPath);
+  if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to write update installer helper.");
+    }
+    return false;
+  }
+
+  QTextStream out(&script);
+  out << "#!/bin/sh\n";
+  out << "set -eu\n";
+  out << "PID=\"$1\"\n";
+  out << "SRC_BIN=\"$2\"\n";
+  out << "DEST_BIN=\"$3\"\n";
+  out << "RELAUNCH=\"$4\"\n";
+  out << "BACKUP=\"${DEST_BIN}.backup\"\n";
+  out << "while kill -0 \"$PID\" >/dev/null 2>&1; do\n";
+  out << "  sleep 0.25\n";
+  out << "done\n";
+  out << "mkdir -p \"$(dirname \"$DEST_BIN\")\"\n";
+  out << "rm -f \"$BACKUP\"\n";
+  out << "if [ -f \"$DEST_BIN\" ]; then\n";
+  out << "  cp \"$DEST_BIN\" \"$BACKUP\" || true\n";
+  out << "fi\n";
+  out << "if cp \"$SRC_BIN\" \"$DEST_BIN\"; then\n";
+  out << "  chmod 755 \"$DEST_BIN\" || true\n";
+  out << "  rm -f \"$BACKUP\"\n";
+  out << "else\n";
+  out << "  if [ -f \"$BACKUP\" ]; then cp \"$BACKUP\" \"$DEST_BIN\" || true; fi\n";
+  out << "  exit 1\n";
+  out << "fi\n";
+  out << "if [ \"$RELAUNCH\" = \"1\" ]; then\n";
+  out << "  \"$DEST_BIN\" >/dev/null 2>&1 &\n";
+  out << "fi\n";
+  script.flush();
+  script.close();
+
+  if (!QFile::setPermissions(
+          scriptPath,
+          QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to make update helper executable.");
+    }
+    return false;
+  }
+
+  const QStringList args = {
+      scriptPath,
+      QString::number(QCoreApplication::applicationPid()),
+      stagedBinaryPath,
+      targetBinaryPath,
+      relaunchAfterInstall ? QStringLiteral("1") : QStringLiteral("0"),
+  };
+  if (!QProcess::startDetached(QStringLiteral("/bin/sh"), args)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to launch update installer helper.");
+    }
+    return false;
+  }
+
+  return true;
+#endif
+}
+
+bool launchWindowsInstallHelper(
+    const QString& stagedExePath,
+    const QString& targetExePath,
+    const bool relaunchAfterInstall,
+    QString* errorMessage) {
+#if !defined(Q_OS_WIN)
+  Q_UNUSED(stagedExePath);
+  Q_UNUSED(targetExePath);
+  Q_UNUSED(relaunchAfterInstall);
+  if (errorMessage) {
+    *errorMessage = QStringLiteral("Automatic update installation is supported on Windows only.");
+  }
+  return false;
+#else
+  const QFileInfo stagedInfo(stagedExePath);
+  if (!stagedInfo.exists() || !stagedInfo.isFile()) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Staged update binary is missing.");
+    }
+    return false;
+  }
+
+  const QString scriptPath = QDir(stagedInfo.absolutePath()).filePath(QStringLiteral("quickqc-install-update.ps1"));
+  QFile script(scriptPath);
+  if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to write update installer helper.");
+    }
+    return false;
+  }
+
+  QTextStream out(&script);
+  out << "param(\n";
+  out << "  [int]$PidToWait,\n";
+  out << "  [string]$SourceExe,\n";
+  out << "  [string]$TargetExe,\n";
+  out << "  [int]$Relaunch\n";
+  out << ")\n";
+  out << "$ErrorActionPreference = 'Stop'\n";
+  out << "$targetDir = Split-Path -Path $TargetExe -Parent\n";
+  out << "if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }\n";
+  out << "$backup = \"$TargetExe.backup\"\n";
+  out << "for ($i = 0; $i -lt 240; $i++) {\n";
+  out << "  if (-not (Get-Process -Id $PidToWait -ErrorAction SilentlyContinue)) { break }\n";
+  out << "  Start-Sleep -Milliseconds 250\n";
+  out << "}\n";
+  out << "try {\n";
+  out << "  if (Test-Path $TargetExe) { Copy-Item -Path $TargetExe -Destination $backup -Force }\n";
+  out << "  Copy-Item -Path $SourceExe -Destination $TargetExe -Force\n";
+  out << "  Remove-Item -Path $backup -Force -ErrorAction SilentlyContinue\n";
+  out << "  if ($Relaunch -eq 1) { Start-Process -FilePath $TargetExe }\n";
+  out << "} catch {\n";
+  out << "  if (Test-Path $backup) { Copy-Item -Path $backup -Destination $TargetExe -Force }\n";
+  out << "  exit 1\n";
+  out << "}\n";
+  script.flush();
+  script.close();
+
+  const QStringList args = {
+      QStringLiteral("-NoProfile"),
+      QStringLiteral("-ExecutionPolicy"),
+      QStringLiteral("Bypass"),
+      QStringLiteral("-File"),
+      scriptPath,
+      QString::number(QCoreApplication::applicationPid()),
+      stagedExePath,
+      targetExePath,
+      relaunchAfterInstall ? QStringLiteral("1") : QStringLiteral("0"),
+  };
+
+  if (!QProcess::startDetached(QStringLiteral("powershell"), args)) {
+    if (errorMessage) {
+      *errorMessage = QStringLiteral("Failed to launch update installer helper.");
+    }
+    return false;
+  }
+
+  return true;
+#endif
+}
+
+bool stageUpdateForCurrentPlatform(
+    QWidget* parent,
+    const QString& assetUrl,
+    const QString& userAgent,
+    const QString& expectedSha256,
+    QString* stagedPayloadPath,
+    QString* errorMessage) {
+#if defined(Q_OS_MAC)
+  return stageMacUpdate(parent, assetUrl, userAgent, expectedSha256, stagedPayloadPath, errorMessage);
+#elif defined(Q_OS_WIN)
+  return stageWindowsUpdate(parent, assetUrl, userAgent, expectedSha256, stagedPayloadPath, errorMessage);
+#elif defined(Q_OS_LINUX)
+  return stageLinuxUpdate(parent, assetUrl, userAgent, expectedSha256, stagedPayloadPath, errorMessage);
+#else
+  Q_UNUSED(parent);
+  Q_UNUSED(assetUrl);
+  Q_UNUSED(userAgent);
+  Q_UNUSED(expectedSha256);
+  Q_UNUSED(stagedPayloadPath);
+  if (errorMessage) {
+    *errorMessage = QStringLiteral("Automatic updater is not available on this platform.");
+  }
+  return false;
+#endif
+}
+
+bool launchInstallHelperForCurrentPlatform(
+    const QString& stagedPayloadPath,
+    const bool relaunchAfterInstall,
+    QString* errorMessage) {
+#if defined(Q_OS_MAC)
+  return launchMacInstallHelper(
+      stagedPayloadPath,
+      currentMacAppBundlePath(),
+      relaunchAfterInstall,
+      errorMessage);
+#elif defined(Q_OS_WIN)
+  return launchWindowsInstallHelper(
+      stagedPayloadPath,
+      QCoreApplication::applicationFilePath(),
+      relaunchAfterInstall,
+      errorMessage);
+#elif defined(Q_OS_LINUX)
+  return launchLinuxInstallHelper(
+      stagedPayloadPath,
+      QCoreApplication::applicationFilePath(),
+      relaunchAfterInstall,
+      errorMessage);
+#else
+  Q_UNUSED(stagedPayloadPath);
+  Q_UNUSED(relaunchAfterInstall);
+  if (errorMessage) {
+    *errorMessage = QStringLiteral("Automatic updater is not available on this platform.");
+  }
+  return false;
+#endif
+}
+
+QString manualUpdateHintForCurrentPlatform() {
+#if defined(Q_OS_MAC)
+  return QStringLiteral("brew update && brew upgrade --cask quickqc");
+#elif defined(Q_OS_WIN)
+  return QStringLiteral("PowerShell: irm https://raw.githubusercontent.com/MuyleangIng/quickqc/main/scripts/install-windows.ps1 | iex");
+#elif defined(Q_OS_LINUX)
+  return QStringLiteral("curl -fsSL https://raw.githubusercontent.com/MuyleangIng/quickqc/main/scripts/install-linux.sh | bash");
+#else
+  return QStringLiteral("Download the latest release from GitHub.");
 #endif
 }
 
@@ -568,6 +1137,7 @@ MainWindow::MainWindow(ClipStorage* storage, ClipboardWatcher* watcher, QWidget*
       settingsButton_(nullptr),
       clearButton_(nullptr),
       openShortcut_(nullptr),
+      subtitleLabel_(nullptr),
       storeSummaryLabel_(nullptr),
       cpuIconLabel_(nullptr),
       cpuSummaryLabel_(nullptr),
@@ -668,14 +1238,14 @@ void MainWindow::setupUi() {
         QKeySequence::PortableText).toString(QKeySequence::NativeText);
   }
 
-  auto* subtitle = new QLabel(
+  subtitleLabel_ = new QLabel(
       QStringLiteral("Compact clipboard manager • %1 to open • Esc to close")
           .arg(openHotkeyLabel),
       central);
-  subtitle->setObjectName(QStringLiteral("subtitle"));
+  subtitleLabel_->setObjectName(QStringLiteral("subtitle"));
 
   titleWrap->addWidget(title);
-  titleWrap->addWidget(subtitle);
+  titleWrap->addWidget(subtitleLabel_);
 
   auto* topActions = new QHBoxLayout();
   topActions->setSpacing(5);
@@ -901,6 +1471,26 @@ void MainWindow::applyOpenShortcut() {
   const QString normalized = normalizeHotkeySetting(appSettings_.openHotkey);
   appSettings_.openHotkey = normalized;
   openShortcut_->setKey(QKeySequence::fromString(normalized, QKeySequence::PortableText));
+  updateSubtitleHotkeyLabel();
+}
+
+void MainWindow::updateSubtitleHotkeyLabel() {
+  if (!subtitleLabel_) {
+    return;
+  }
+
+  QString openHotkeyLabel = QKeySequence::fromString(
+      appSettings_.openHotkey,
+      QKeySequence::PortableText).toString(QKeySequence::NativeText);
+  if (openHotkeyLabel.trimmed().isEmpty()) {
+    openHotkeyLabel = QKeySequence::fromString(
+        defaultOpenHotkeyPortable(),
+        QKeySequence::PortableText).toString(QKeySequence::NativeText);
+  }
+
+  subtitleLabel_->setText(
+      QStringLiteral("Compact clipboard manager • %1 to open • Esc to close")
+          .arg(openHotkeyLabel));
 }
 
 void MainWindow::applyStyles() {
@@ -931,8 +1521,20 @@ QLabel#cpuIcon { min-width: 14px; max-width: 14px; }
 QDialog { background: #0f1828; color: #e6f0ff; }
 QDialog QLabel { color: #e6f0ff; }
 QDialog QCheckBox { color: #d8e7fc; }
-QDialog QDoubleSpinBox, QDialog QComboBox {
+QDialog QDoubleSpinBox, QDialog QComboBox, QDialog QKeySequenceEdit {
   color: #e6f0ff; background: #132034; border: 1px solid #29405b; border-radius: 8px;
+}
+QDialog QDoubleSpinBox::up-button, QDialog QDoubleSpinBox::down-button {
+  width: 16px; border-left: 1px solid #29405b; background: #19314b;
+}
+QDialog QDoubleSpinBox::up-button:hover, QDialog QDoubleSpinBox::down-button:hover {
+  background: #214264;
+}
+QDialog QDoubleSpinBox::up-arrow, QDialog QDoubleSpinBox::down-arrow {
+  width: 8px; height: 8px;
+}
+QKeySequenceEdit#hotkeyEdit {
+  min-width: 180px; padding: 4px 8px; font-weight: 600;
 }
 QPlainTextEdit#editTextArea, QLineEdit#renameLine {
   border: 1px solid #29405b; border-radius: 9px; background: #132034; color: #e6f0ff; padding: 8px;
@@ -982,8 +1584,20 @@ QLabel#cpuIcon { min-width: 14px; max-width: 14px; }
 QDialog { background: #f7faff; color: #1d2f42; }
 QDialog QLabel { color: #1d2f42; }
 QDialog QCheckBox { color: #243a54; }
-QDialog QDoubleSpinBox, QDialog QComboBox {
+QDialog QDoubleSpinBox, QDialog QComboBox, QDialog QKeySequenceEdit {
   color: #1d2f42; background: #ffffff; border: 1px solid #b6c8dd; border-radius: 8px;
+}
+QDialog QDoubleSpinBox::up-button, QDialog QDoubleSpinBox::down-button {
+  width: 16px; border-left: 1px solid #b6c8dd; background: #eef4fc;
+}
+QDialog QDoubleSpinBox::up-button:hover, QDialog QDoubleSpinBox::down-button:hover {
+  background: #dde9f8;
+}
+QDialog QDoubleSpinBox::up-arrow, QDialog QDoubleSpinBox::down-arrow {
+  width: 8px; height: 8px;
+}
+QKeySequenceEdit#hotkeyEdit {
+  min-width: 180px; padding: 4px 8px; font-weight: 600;
 }
 QPlainTextEdit#editTextArea, QLineEdit#renameLine {
   border: 1px solid #b6c8dd; border-radius: 9px; background: #ffffff; color: #1d2f42; padding: 8px;
@@ -1731,7 +2345,7 @@ void MainWindow::openSettingsDialog() {
   QDialog dialog(this, Qt::Dialog | Qt::WindowTitleHint | Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint);
   dialog.setWindowTitle(QStringLiteral("Settings"));
   dialog.setWindowModality(Qt::ApplicationModal);
-  dialog.resize(460, 420);
+  dialog.resize(500, 500);
   centerDialogOnScreen(&dialog, this);
 
   auto* root = new QVBoxLayout(&dialog);
@@ -1813,15 +2427,29 @@ void MainWindow::openSettingsDialog() {
   auto* hotkeyRow = new QHBoxLayout();
   auto* hotkeyLabel = new QLabel(QStringLiteral("Open app hotkey"), &dialog);
   auto* hotkeyEdit = new QKeySequenceEdit(&dialog);
+  hotkeyEdit->setObjectName(QStringLiteral("hotkeyEdit"));
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
   hotkeyEdit->setMaximumSequenceLength(1);
 #endif
   hotkeyEdit->setKeySequence(QKeySequence::fromString(
       appSettings_.openHotkey,
       QKeySequence::PortableText));
+  auto* hotkeyResetBtn = new QPushButton(QStringLiteral("Reset"), &dialog);
+  connect(hotkeyResetBtn, &QPushButton::clicked, &dialog, [hotkeyEdit]() {
+    hotkeyEdit->setKeySequence(QKeySequence::fromString(
+        defaultOpenHotkeyPortable(),
+        QKeySequence::PortableText));
+  });
   hotkeyRow->addWidget(hotkeyLabel);
   hotkeyRow->addStretch();
   hotkeyRow->addWidget(hotkeyEdit);
+  hotkeyRow->addWidget(hotkeyResetBtn);
+
+  auto* hotkeyHint = new QLabel(
+      QStringLiteral("Press your keys to record a shortcut. Only one shortcut step is saved."),
+      &dialog);
+  hotkeyHint->setObjectName(QStringLiteral("cardMeta"));
+  hotkeyHint->setWordWrap(true);
 
   auto* gpuCheck = new QCheckBox(QStringLiteral("Enable GPU image preview (experimental)"), &dialog);
   gpuCheck->setChecked(appSettings_.gpuPreviewEnabled && gpuInfo_.supported);
@@ -1839,6 +2467,15 @@ void MainWindow::openSettingsDialog() {
   auto* updateBtn = new QPushButton(QStringLiteral("Check for Updates"), &dialog);
   connect(updateBtn, &QPushButton::clicked, this, &MainWindow::onCheckUpdates);
 
+  auto* backupBtn = new QPushButton(QStringLiteral("Backup Data"), &dialog);
+  auto* restoreBtn = new QPushButton(QStringLiteral("Restore Data"), &dialog);
+  auto* backupRow = new QHBoxLayout();
+  backupRow->addWidget(backupBtn);
+  backupRow->addWidget(restoreBtn);
+  backupRow->addStretch();
+  connect(backupBtn, &QPushButton::clicked, this, &MainWindow::onBackupData);
+  connect(restoreBtn, &QPushButton::clicked, this, &MainWindow::onRestoreData);
+
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
   connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
@@ -1850,10 +2487,12 @@ void MainWindow::openSettingsDialog() {
   root->addWidget(startupCheck);
   root->addWidget(startupUpdateCheck);
   root->addLayout(hotkeyRow);
+  root->addWidget(hotkeyHint);
   root->addWidget(gpuCheck);
   root->addWidget(gpuInfoLabel);
   root->addWidget(versionFounder);
   root->addWidget(updateBtn);
+  root->addLayout(backupRow);
   root->addStretch();
   root->addWidget(buttons);
 
@@ -1897,6 +2536,257 @@ void MainWindow::openSettingsDialog() {
       appSettings_.gpuPreviewEnabled
           ? QStringLiteral("Settings saved. GPU preview enabled.")
           : QStringLiteral("Settings saved."));
+}
+
+void MainWindow::onBackupData() {
+  if (!storage_) {
+    QMessageBox::warning(this, QStringLiteral("Backup"), QStringLiteral("Storage is not available."));
+    return;
+  }
+
+  QString defaultDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  if (defaultDir.trimmed().isEmpty()) {
+    defaultDir = QDir::homePath();
+  }
+  const QString defaultPath = QDir(defaultDir).filePath(
+      QStringLiteral("quickqc-backup-%1.json")
+          .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"))));
+
+  const QString outputPath = QFileDialog::getSaveFileName(
+      this,
+      QStringLiteral("Backup QuickQC Data"),
+      defaultPath,
+      QStringLiteral("JSON files (*.json)"));
+  if (outputPath.trimmed().isEmpty()) {
+    return;
+  }
+
+  const QList<ClipItem> clips = storage_->allClipsForBackup();
+  QJsonArray clipArray;
+  for (const ClipItem& clip : clips) {
+    QJsonObject c;
+    c.insert(QStringLiteral("id"), clip.id);
+    c.insert(QStringLiteral("kind"), clipKindToString(clip.kind));
+    c.insert(QStringLiteral("text"), clip.text);
+    c.insert(QStringLiteral("imageName"), clip.imageName);
+    c.insert(QStringLiteral("sourcePath"), clip.sourcePath);
+    c.insert(QStringLiteral("createdAt"), QString::number(clip.createdAt));
+    c.insert(QStringLiteral("updatedAt"), QString::number(clip.updatedAt));
+    c.insert(QStringLiteral("pinned"), clip.pinned);
+    if (clip.kind == ClipKind::Image) {
+      c.insert(QStringLiteral("imageDataBase64"), QString::fromLatin1(clip.imageData.toBase64()));
+    }
+
+    QJsonArray tags;
+    for (const QString& tag : clip.tags) {
+      const QString trimmed = tag.trimmed();
+      if (!trimmed.isEmpty()) {
+        tags.push_back(trimmed);
+      }
+    }
+    c.insert(QStringLiteral("tags"), tags);
+    clipArray.push_back(c);
+  }
+
+  QJsonObject settingsObj;
+  settingsObj.insert(QStringLiteral("autoCloseOnCopy"), appSettings_.autoCloseOnCopy);
+  settingsObj.insert(QStringLiteral("autoCloseDelayMs"), appSettings_.autoCloseDelayMs);
+  settingsObj.insert(QStringLiteral("themeMode"), themeModeToString(appSettings_.themeMode));
+  settingsObj.insert(QStringLiteral("startAtLogin"), appSettings_.startAtLogin);
+  settingsObj.insert(QStringLiteral("gpuPreviewEnabled"), appSettings_.gpuPreviewEnabled);
+  settingsObj.insert(QStringLiteral("autoCheckOnStartup"), appSettings_.autoCheckOnStartup);
+  settingsObj.insert(QStringLiteral("openHotkey"), appSettings_.openHotkey);
+
+  QJsonObject root;
+  root.insert(QStringLiteral("format"), QStringLiteral("quickqc-backup-v1"));
+  root.insert(QStringLiteral("exportedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+  root.insert(QStringLiteral("appVersion"), versionString());
+  root.insert(QStringLiteral("settings"), settingsObj);
+  root.insert(QStringLiteral("history"), clipArray);
+
+  QFile file(outputPath);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QMessageBox::warning(
+        this,
+        QStringLiteral("Backup"),
+        QStringLiteral("Could not write backup file:\n%1").arg(outputPath));
+    return;
+  }
+
+  const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+  if (file.write(payload) != payload.size()) {
+    file.close();
+    QMessageBox::warning(
+        this,
+        QStringLiteral("Backup"),
+        QStringLiteral("Failed to save complete backup data."));
+    return;
+  }
+  file.close();
+
+  statusLabel_->setText(QStringLiteral("Backup saved: %1").arg(QFileInfo(outputPath).fileName()));
+  QMessageBox::information(
+      this,
+      QStringLiteral("Backup"),
+      QStringLiteral("Backup complete.\nSaved %1 item(s).").arg(clips.size()));
+}
+
+void MainWindow::onRestoreData() {
+  if (!storage_) {
+    QMessageBox::warning(this, QStringLiteral("Restore"), QStringLiteral("Storage is not available."));
+    return;
+  }
+
+  const QString inputPath = QFileDialog::getOpenFileName(
+      this,
+      QStringLiteral("Restore QuickQC Data"),
+      QString(),
+      QStringLiteral("JSON files (*.json)"));
+  if (inputPath.trimmed().isEmpty()) {
+    return;
+  }
+
+  QFile file(inputPath);
+  if (!file.open(QIODevice::ReadOnly)) {
+    QMessageBox::warning(
+        this,
+        QStringLiteral("Restore"),
+        QStringLiteral("Could not open backup file:\n%1").arg(inputPath));
+    return;
+  }
+
+  QJsonParseError parseError;
+  const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+  file.close();
+  if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+    QMessageBox::warning(
+        this,
+        QStringLiteral("Restore"),
+        QStringLiteral("Invalid backup JSON format."));
+    return;
+  }
+
+  const QJsonObject root = doc.object();
+  const QString format = root.value(QStringLiteral("format")).toString().trimmed();
+  if (!format.startsWith(QStringLiteral("quickqc-backup-"))) {
+    QMessageBox::warning(
+        this,
+        QStringLiteral("Restore"),
+        QStringLiteral("This file is not a QuickQC backup."));
+    return;
+  }
+
+  const QJsonArray historyArray = root.value(QStringLiteral("history")).toArray();
+  QList<ClipItem> restoredItems;
+  restoredItems.reserve(historyArray.size());
+
+  for (const QJsonValue& entryValue : historyArray) {
+    if (!entryValue.isObject()) {
+      continue;
+    }
+    const QJsonObject entry = entryValue.toObject();
+    ClipItem item;
+    item.id = entry.value(QStringLiteral("id")).toString();
+    item.kind = clipKindFromString(entry.value(QStringLiteral("kind")).toString());
+    item.text = entry.value(QStringLiteral("text")).toString();
+    item.imageName = entry.value(QStringLiteral("imageName")).toString();
+    item.sourcePath = entry.value(QStringLiteral("sourcePath")).toString();
+    item.createdAt = entry.value(QStringLiteral("createdAt")).toVariant().toLongLong();
+    item.updatedAt = entry.value(QStringLiteral("updatedAt")).toVariant().toLongLong();
+    item.pinned = entry.value(QStringLiteral("pinned")).toBool(false);
+    if (item.kind == ClipKind::Image) {
+      item.imageData = QByteArray::fromBase64(
+          entry.value(QStringLiteral("imageDataBase64")).toString().toLatin1());
+      if (item.imageData.isEmpty()) {
+        continue;
+      }
+    }
+
+    const QJsonArray tags = entry.value(QStringLiteral("tags")).toArray();
+    for (const QJsonValue& tag : tags) {
+      if (tag.isString()) {
+        const QString trimmed = tag.toString().trimmed();
+        if (!trimmed.isEmpty()) {
+          item.tags.push_back(trimmed);
+        }
+      }
+    }
+
+    restoredItems.push_back(item);
+  }
+
+  const auto confirm = QMessageBox::question(
+      this,
+      QStringLiteral("Restore Backup"),
+      QStringLiteral("Restore this backup and replace current clipboard history and settings?\n\nItems in backup: %1")
+          .arg(restoredItems.size()),
+      QMessageBox::Yes | QMessageBox::No,
+      QMessageBox::No);
+  if (confirm != QMessageBox::Yes) {
+    return;
+  }
+
+  if (!storage_->replaceAllFromBackup(restoredItems)) {
+    QMessageBox::warning(
+        this,
+        QStringLiteral("Restore"),
+        QStringLiteral("Failed to restore clipboard history."));
+    return;
+  }
+
+  AppSettingsData next = appSettings_;
+  const QString previousHotkey = appSettings_.openHotkey;
+  const QJsonObject settingsObj = root.value(QStringLiteral("settings")).toObject();
+  if (!settingsObj.isEmpty()) {
+    if (settingsObj.contains(QStringLiteral("autoCloseOnCopy"))) {
+      next.autoCloseOnCopy = settingsObj.value(QStringLiteral("autoCloseOnCopy")).toBool(next.autoCloseOnCopy);
+    }
+    if (settingsObj.contains(QStringLiteral("autoCloseDelayMs"))) {
+      next.autoCloseDelayMs = std::clamp(
+          settingsObj.value(QStringLiteral("autoCloseDelayMs")).toInt(next.autoCloseDelayMs),
+          0,
+          30000);
+    }
+    if (settingsObj.contains(QStringLiteral("themeMode"))) {
+      next.themeMode = themeModeFromString(settingsObj.value(QStringLiteral("themeMode")).toString());
+    }
+    if (settingsObj.contains(QStringLiteral("gpuPreviewEnabled"))) {
+      next.gpuPreviewEnabled = settingsObj.value(QStringLiteral("gpuPreviewEnabled")).toBool(next.gpuPreviewEnabled) && gpuInfo_.supported;
+    }
+    if (settingsObj.contains(QStringLiteral("autoCheckOnStartup"))) {
+      next.autoCheckOnStartup = settingsObj.value(QStringLiteral("autoCheckOnStartup")).toBool(next.autoCheckOnStartup);
+    }
+    if (settingsObj.contains(QStringLiteral("openHotkey"))) {
+      next.openHotkey = normalizeHotkeySetting(settingsObj.value(QStringLiteral("openHotkey")).toString());
+    }
+    if (settingsObj.contains(QStringLiteral("startAtLogin"))) {
+      const bool requestedStartup = settingsObj.value(QStringLiteral("startAtLogin")).toBool(next.startAtLogin);
+      if (requestedStartup != appSettings_.startAtLogin) {
+        QString startupError;
+        if (!setLaunchAtLogin(requestedStartup, &startupError)) {
+          QMessageBox::warning(this, QStringLiteral("Restore"), startupError);
+          next.startAtLogin = appSettings_.startAtLogin;
+        } else {
+          next.startAtLogin = requestedStartup;
+        }
+      }
+    }
+  }
+
+  appSettings_ = next;
+  saveSettings();
+  applyOpenShortcut();
+  if (appSettings_.openHotkey != previousHotkey) {
+    emit openHotkeyChanged(appSettings_.openHotkey);
+  }
+  applyStyles();
+  rebuildTrayMenu();
+  refresh();
+  statusLabel_->setText(QStringLiteral("Restore completed (%1 item(s)).").arg(restoredItems.size()));
+  QMessageBox::information(
+      this,
+      QStringLiteral("Restore"),
+      QStringLiteral("Restore complete.\nLoaded %1 item(s).").arg(restoredItems.size()));
 }
 
 void MainWindow::onSearchChanged(const QString&) {
@@ -2178,7 +3068,9 @@ void MainWindow::onCheckUpdates() {
   const QJsonObject obj = doc.object();
   const QString latestTag = obj.value(QStringLiteral("tag_name")).toString();
   const QString latestVersion = normalizeVersion(latestTag);
-  const QString assetUrl = releaseAssetUrlForCurrentPlatform(obj);
+  const QString assetName = releaseAssetNameForCurrentPlatform();
+  const QString assetUrl = releaseAssetUrlByName(obj, assetName);
+  const QString checksumManifestUrl = releaseAssetUrlByName(obj, releaseChecksumsAssetName());
 
   if (latestVersion.isEmpty()) {
     const QString message = QStringLiteral("Update metadata is missing a release version.");
@@ -2225,15 +3117,63 @@ void MainWindow::onCheckUpdates() {
     }
 
     if (assetUrl.isEmpty()) {
-      const QString message = QStringLiteral("Automatic update package was not found for this Mac architecture.");
+      const QString message = QStringLiteral(
+                                  "Automatic update package was not found for this platform.\n\nManual update command:\n%1")
+                                  .arg(manualUpdateHintForCurrentPlatform());
       QMessageBox::warning(this, QStringLiteral("Update"), message);
       statusLabel_->setText(message);
       return;
     }
 
-    QString stagedAppPath;
+    if (checksumManifestUrl.isEmpty()) {
+      const QString message = QStringLiteral(
+                                  "Checksum manifest is missing for this release.\n"
+                                  "QuickQC will not auto-install unverified packages.\n\n"
+                                  "Manual update command:\n%1")
+                                  .arg(manualUpdateHintForCurrentPlatform());
+      QMessageBox::warning(this, QStringLiteral("Update"), message);
+      statusLabel_->setText(QStringLiteral("Update blocked: checksum manifest missing."));
+      return;
+    }
+
+    QString checksumsText;
+    QString checksumsError;
+    if (!downloadTextWithTimeout(
+            QUrl(checksumManifestUrl),
+            userAgent,
+            12000,
+            &checksumsText,
+            &checksumsError)) {
+      const QString message = QStringLiteral(
+                                  "Could not download checksum manifest: %1\n\n"
+                                  "Manual update command:\n%2")
+                                  .arg(checksumsError, manualUpdateHintForCurrentPlatform());
+      QMessageBox::warning(this, QStringLiteral("Update"), message);
+      statusLabel_->setText(QStringLiteral("Update blocked: checksum manifest unavailable."));
+      return;
+    }
+
+    const QString expectedSha256 = checksumForAssetFromManifest(checksumsText, assetName);
+    if (expectedSha256.isEmpty()) {
+      const QString message = QStringLiteral(
+                                  "Checksum entry was not found for asset: %1\n"
+                                  "QuickQC will not auto-install unverified packages.\n\n"
+                                  "Manual update command:\n%2")
+                                  .arg(assetName, manualUpdateHintForCurrentPlatform());
+      QMessageBox::warning(this, QStringLiteral("Update"), message);
+      statusLabel_->setText(QStringLiteral("Update blocked: checksum not found for asset."));
+      return;
+    }
+
+    QString stagedPayloadPath;
     QString stageError;
-    if (!stageMacUpdate(this, assetUrl, userAgent, &stagedAppPath, &stageError)) {
+    if (!stageUpdateForCurrentPlatform(
+            this,
+            assetUrl,
+            userAgent,
+            expectedSha256,
+            &stagedPayloadPath,
+            &stageError)) {
       QMessageBox::warning(this, QStringLiteral("Update"), stageError);
       statusLabel_->setText(stageError);
       return;
@@ -2242,7 +3182,7 @@ void MainWindow::onCheckUpdates() {
     QMessageBox restartPrompt(this);
     restartPrompt.setWindowTitle(QStringLiteral("Update Ready"));
     restartPrompt.setText(
-        QStringLiteral("%1 %2 has been downloaded and prepared.")
+        QStringLiteral("%1 %2 has been downloaded, verified, and prepared.")
             .arg(QString::fromUtf8(kAppDisplayName), latestVersion));
     restartPrompt.setInformativeText(
         QStringLiteral("Restart now to apply immediately, or Later to install automatically when QuickQC exits."));
@@ -2254,8 +3194,11 @@ void MainWindow::onCheckUpdates() {
     const bool restartNow = restartPrompt.clickedButton() == restartNowBtn;
 
     QString helperError;
-    if (!launchMacInstallHelper(stagedAppPath, restartNow, &helperError)) {
-      QMessageBox::warning(this, QStringLiteral("Update"), helperError);
+    if (!launchInstallHelperForCurrentPlatform(stagedPayloadPath, restartNow, &helperError)) {
+      const QString message = QStringLiteral(
+                                  "%1\n\nManual update command:\n%2")
+                                  .arg(helperError, manualUpdateHintForCurrentPlatform());
+      QMessageBox::warning(this, QStringLiteral("Update"), message);
       statusLabel_->setText(helperError);
       return;
     }

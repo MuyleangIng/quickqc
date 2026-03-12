@@ -85,10 +85,13 @@ class MainWindow : public QMainWindow {
   void setupTray();
   void setupShortcuts();
   void applyOpenShortcut();
+  void updateSubtitleHotkeyLabel();
   void applyStyles();
   void populateList(const QList<ClipItem>& items);
   void refreshStats();
   void openSettingsDialog();
+  void onBackupData();
+  void onRestoreData();
   void rebuildTrayMenu();
   void showToast(const QString& message, int durationMs = 1200);
 
@@ -135,6 +138,7 @@ class MainWindow : public QMainWindow {
   QPushButton* clearButton_;
   QShortcut* openShortcut_;
 
+  QLabel* subtitleLabel_;
   QLabel* storeSummaryLabel_;
   QLabel* cpuIconLabel_;
   QLabel* cpuSummaryLabel_;

@@ -170,6 +170,31 @@ std::optional<ClipItem> ClipStorage::getClipById(const QString& id) const {
   return rowToClip(q);
 }
 
+QList<ClipItem> ClipStorage::allClipsForBackup() const {
+  QList<ClipItem> items;
+  if (!db_.isOpen()) {
+    return items;
+  }
+
+  QSqlQuery q(db_);
+  q.prepare(QStringLiteral(
+      "SELECT %1 "
+      "FROM clips "
+      "ORDER BY createdAt ASC")
+                .arg(QString::fromUtf8(kFullSelectColumns)));
+
+  if (!q.exec()) {
+    logQueryError(q, QStringLiteral("allClipsForBackup"));
+    return items;
+  }
+
+  while (q.next()) {
+    items.push_back(rowToClip(q));
+  }
+
+  return items;
+}
+
 bool ClipStorage::insertText(const QString& text) {
   const QString clipped = text.trimmed();
   if (clipped.isEmpty() || !db_.isOpen()) {
@@ -347,6 +372,79 @@ bool ClipStorage::renameClipImage(const QString& id, const QString& imageName) {
   }
 
   return q.numRowsAffected() > 0;
+}
+
+bool ClipStorage::replaceAllFromBackup(const QList<ClipItem>& items) {
+  if (!db_.isOpen()) {
+    return false;
+  }
+
+  if (!db_.transaction()) {
+    return false;
+  }
+
+  QSqlQuery clearQuery(db_);
+  if (!clearQuery.exec(QStringLiteral("DELETE FROM clips"))) {
+    logQueryError(clearQuery, QStringLiteral("replaceAllFromBackup/clear"));
+    db_.rollback();
+    return false;
+  }
+
+  QSqlQuery insertQuery(db_);
+  insertQuery.prepare(QStringLiteral(
+      "INSERT INTO clips ("
+      "id, kind, text, imageData, imageName, sourcePath, createdAt, updatedAt, pinned, tagsJson"
+      ") VALUES ("
+      ":id, :kind, :text, :imageData, :imageName, :sourcePath, :createdAt, :updatedAt, :pinned, :tagsJson"
+      ")"));
+
+  for (const ClipItem& item : items) {
+    const QString id = item.id.trimmed().isEmpty() ? generateId() : item.id.trimmed();
+    const QString kind = clipKindToString(item.kind);
+    const bool isImage = item.kind == ClipKind::Image;
+    const QString safeImageName = item.imageName.trimmed().isEmpty()
+                                      ? QStringLiteral("clipboard-image.png")
+                                      : item.imageName.trimmed();
+    const qint64 createdAt = item.createdAt > 0 ? item.createdAt : QDateTime::currentMSecsSinceEpoch();
+
+    QJsonArray tags;
+    for (const QString& tag : item.tags) {
+      const QString trimmed = tag.trimmed();
+      if (!trimmed.isEmpty()) {
+        tags.append(trimmed);
+      }
+    }
+
+    insertQuery.bindValue(QStringLiteral(":id"), id);
+    insertQuery.bindValue(QStringLiteral(":kind"), kind);
+    insertQuery.bindValue(QStringLiteral(":text"), isImage ? QVariant() : item.text);
+    insertQuery.bindValue(QStringLiteral(":imageData"), isImage ? item.imageData : QVariant());
+    insertQuery.bindValue(QStringLiteral(":imageName"), isImage ? safeImageName : QVariant());
+    insertQuery.bindValue(QStringLiteral(":sourcePath"), isImage ? item.sourcePath.trimmed() : QVariant());
+    insertQuery.bindValue(QStringLiteral(":createdAt"), createdAt);
+    if (item.updatedAt > 0) {
+      insertQuery.bindValue(QStringLiteral(":updatedAt"), item.updatedAt);
+    } else {
+      insertQuery.bindValue(QStringLiteral(":updatedAt"), QVariant());
+    }
+    insertQuery.bindValue(QStringLiteral(":pinned"), item.pinned ? 1 : 0);
+    insertQuery.bindValue(
+        QStringLiteral(":tagsJson"),
+        QString::fromUtf8(QJsonDocument(tags).toJson(QJsonDocument::Compact)));
+
+    if (!insertQuery.exec()) {
+      logQueryError(insertQuery, QStringLiteral("replaceAllFromBackup/insert"));
+      db_.rollback();
+      return false;
+    }
+  }
+
+  if (!db_.commit()) {
+    db_.rollback();
+    return false;
+  }
+
+  return true;
 }
 
 ClipStorage::StorageStats ClipStorage::stats() const {

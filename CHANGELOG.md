@@ -4,6 +4,20 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.5] - 2026-03-12
+
+### Added
+
+- Added in-app backup and restore for clipboard history and app settings (JSON format).
+- Added checksum-verified updater flow using release checksum manifest.
+- Added rollback-safe installer helpers for update apply failures.
+- Added Windows and Linux in-app updater install flow with `Restart Now` / `Later`.
+
+### Changed
+
+- Improved Settings hotkey UI with clearer capture controls and helper text.
+- Polished Settings spinbox increment/decrement button styling for dark and light themes.
+
 ## [0.2.4] - 2026-03-12
 
 ### Fixed

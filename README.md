@@ -17,12 +17,13 @@ QuickQC is a fast, offline clipboard manager for text and images, built with C++
   - macOS: `Cmd+Shift+V`
   - Windows/Linux: `Ctrl+Shift+V`
   - Customizable from Settings
+- Backup/restore support for clipboard history and settings (JSON)
 - Per-item actions (`Copy`, `Edit`, `Pin`, `Delete`, `Preview`)
 - Clean toast feedback for copy actions
 - Theme chips (`System`, `Moon`, `Sun`)
 - Optional GPU image preview (with runtime support check)
 - Tray menu, startup option, update action dialog
-- In-app updater (macOS): checks latest release, downloads package, and stages install with `Restart Now` or `Later`
+- In-app updater (macOS/Windows/Linux): checks latest release, verifies checksum, stages install, and supports rollback-safe apply with `Restart Now` or `Later`
 - Optional auto-check for updates on startup
 
 ## Supported Platforms
@@ -94,15 +95,18 @@ chmod +x ~/.local/bin/quickqc
 - Linux: rerun `install-linux.sh` command above to pull the latest release
 - Windows: rerun `install-windows.ps1` command above to pull the latest release
 
-## In-App Update (macOS)
+## In-App Update (macOS / Windows / Linux)
 
 Use this from inside QuickQC:
 
 1. Open **Settings** or tray menu and click **Check Updates**.
 2. If an update is available, click **Download & Install**.
-3. After download finishes:
+3. QuickQC verifies package checksum before staging update.
+4. After download and verification finish:
    - **Restart Now** applies update immediately.
    - **Later** schedules update to apply when QuickQC exits.
+
+If verification cannot be completed, QuickQC blocks auto-install and shows a manual update command.
 
 ### Test Path: `0.2.1 -> 0.2.2`
 
@@ -151,14 +155,14 @@ QuickQC stores data in your OS app-data directory with:
 
 ## Release Process
 
-Before tagging, add a matching section to `CHANGELOG.md` (for example `## [0.2.3] - YYYY-MM-DD`).
+Before tagging, add a matching section to `CHANGELOG.md` (for example `## [0.2.5] - YYYY-MM-DD`).
 Release notes are generated automatically from that section.
 
 Example tag:
 
 ```bash
-git tag -a 0.2.3 -m "QuickQC 0.2.3"
-git push origin 0.2.3
+git tag -a 0.2.5 -m "QuickQC 0.2.5"
+git push origin 0.2.5
 ```
 
 Pushing a tag triggers GitHub Actions to build and attach release artifacts for:
