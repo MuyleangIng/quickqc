@@ -1,0 +1,140 @@
+name: QuickQC CI
+
+on:
+  push:
+    branches: ["main", "master"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build-${{ matrix.id }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-amd64
+            runner: ubuntu-latest
+          - id: linux-arm64
+            runner: ubuntu-24.04-arm
+          - id: macos-amd64
+            runner: macos-13
+          - id: macos-arm64
+            runner: macos-14
+          - id: windows-amd64
+            runner: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libdbus-1-dev \
+            libfreetype6-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxrender-dev \
+            libxcb1-dev \
+            libxcb-cursor0 \
+            libxcb-glx0 \
+            libxcb-keysyms1 \
+            libxcb-image0 \
+            libxcb-shm0 \
+            libxcb-icccm4 \
+            libxcb-sync-dev \
+            libxcb-xfixes0 \
+            libxcb-shape0 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-xinerama0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Ninja
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ninja
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.3'
+          cache: true
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          if [ -d build/quickqc.app ]; then
+            tar -czf quickqc-${{ matrix.id }}.tar.gz -C build quickqc.app
+          elif [ -f build/quickqc ]; then
+            tar -czf quickqc-${{ matrix.id }}.tar.gz -C build quickqc
+          else
+            echo "Build output not found" >&2
+            exit 1
+          fi
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path "build/quickqc.exe") {
+            Compress-Archive -Path "build/quickqc.exe" -DestinationPath "quickqc-${{ matrix.id }}.zip" -Force
+          }
+          elseif (Test-Path "build/Release/quickqc.exe") {
+            Compress-Archive -Path "build/Release/quickqc.exe" -DestinationPath "quickqc-${{ matrix.id }}.zip" -Force
+          }
+          else {
+            throw "Build output not found"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quickqc-${{ matrix.id }}
+          path: |
+            quickqc-${{ matrix.id }}.tar.gz
+            quickqc-${{ matrix.id }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-artifacts/*
+          generate_release_notes: true
