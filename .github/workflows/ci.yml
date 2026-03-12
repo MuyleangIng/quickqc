@@ -167,8 +167,14 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           APP_BIN="dist/quickqc.app/Contents/MacOS/quickqc"
+          APP_SQL_FRAMEWORK="dist/quickqc.app/Contents/Frameworks/QtSql.framework/Versions/A/QtSql"
+          APP_SQL_DRIVER="dist/quickqc.app/Contents/PlugIns/sqldrivers/libqsqlite.dylib"
           test -f "$APP_BIN"
-          otool -L "$APP_BIN" | grep -q "@executable_path/../Frameworks/QtSql.framework/Versions/A/QtSql"
+          test -f "$APP_SQL_FRAMEWORK"
+          test -f "$APP_SQL_DRIVER"
+          otool -L "$APP_BIN"
+          otool -L "$APP_BIN" | grep -Eq "(@executable_path/../Frameworks|@rpath)/QtSql.framework/Versions/A/QtSql"
+          otool -l "$APP_BIN" | grep -A2 LC_RPATH | grep -q "@executable_path/../Frameworks"
 
       - name: Package (Unix)
         if: runner.os != 'Windows'

@@ -4,6 +4,14 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.1.4] - 2026-03-12
+
+### Fixed
+
+- macOS release verification now accepts QtSql links via `@rpath` or `@executable_path`.
+- CI now verifies bundled `QtSql.framework` and `qsqlite` driver files before packaging.
+- macOS deploy now excludes `qsqlmimer` to avoid unresolved external driver dependency noise.
+
 ## [0.1.3] - 2026-03-12
 
 ### Fixed
