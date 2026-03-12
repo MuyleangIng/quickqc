@@ -6,6 +6,9 @@ on:
     tags: ["0.*", "v*"]
   pull_request:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 permissions:
   contents: read
 
@@ -22,9 +25,9 @@ jobs:
           - id: linux-ubuntu-arm64
             runner: ubuntu-24.04-arm
           - id: macos-amd64
-            runner: macos-13
+            runner: macos-15-intel
           - id: macos-arm64
-            runner: macos-14
+            runner: macos-15
           - id: windows-amd64
             runner: windows-latest
 
@@ -150,7 +153,9 @@ jobs:
             tar \
             gzip \
             which \
+            qt6-qtbase-devel \
             mesa-libGL-devel \
+            mesa-libEGL-devel \
             libxkbcommon-devel \
             fontconfig-devel \
             dbus-devel \
@@ -171,12 +176,6 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install ninja
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.7.3'
-          cache: true
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
