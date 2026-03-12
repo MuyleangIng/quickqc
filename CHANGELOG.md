@@ -4,6 +4,14 @@ All notable changes to QuickQC will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.1.8] - 2026-03-12
+
+### Changed
+
+- Reworked update checking into one modal flow: loading state first, then latest/update/error result in the same dialog.
+- Update-available modal now provides `Update Now`, `Later`, and `Restart Now` actions.
+- Up-to-date modal now clearly shows both current and latest version numbers.
+
 ## [0.1.7] - 2026-03-12
 
 ### Added

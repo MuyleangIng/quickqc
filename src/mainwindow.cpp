@@ -47,7 +47,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QProcess>
-#include <QProgressDialog>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
@@ -122,6 +122,16 @@ int compareVersions(const QString& lhsRaw, const QString& rhsRaw) {
   }
 
   return 0;
+}
+
+bool restartApplication() {
+  const QString appPath = QCoreApplication::applicationFilePath();
+  const QStringList args = QCoreApplication::arguments().mid(1);
+  if (!QProcess::startDetached(appPath, args)) {
+    return false;
+  }
+  qApp->quit();
+  return true;
 }
 
 class GpuImagePreviewWidget final : public QOpenGLWidget {
@@ -1532,12 +1542,46 @@ void MainWindow::onOpenSettings() {
 }
 
 void MainWindow::onCheckUpdates() {
-  QProgressDialog checkingDialog(QStringLiteral("Checking for updates..."), QString(), 0, 0, this);
-  checkingDialog.setWindowTitle(QStringLiteral("Update Check"));
-  checkingDialog.setCancelButton(nullptr);
-  checkingDialog.setWindowModality(Qt::WindowModal);
-  checkingDialog.setMinimumDuration(0);
-  checkingDialog.show();
+  enum class UpdateChoice {
+    None,
+    Close,
+    Later,
+    UpdateNow,
+    RestartNow,
+  };
+
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Update Check"));
+  dialog.setWindowModality(Qt::WindowModal);
+  dialog.setMinimumWidth(420);
+
+  auto* root = new QVBoxLayout(&dialog);
+  root->setContentsMargins(14, 14, 14, 14);
+  root->setSpacing(10);
+
+  const QString currentVersion = normalizeVersion(versionString());
+
+  auto* titleLabel = new QLabel(QStringLiteral("Checking for updates..."), &dialog);
+  titleLabel->setWordWrap(true);
+
+  auto* detailLabel = new QLabel(
+      QStringLiteral("Current version: %1").arg(currentVersion),
+      &dialog);
+  detailLabel->setWordWrap(true);
+
+  auto* progressBar = new QProgressBar(&dialog);
+  progressBar->setRange(0, 0);
+  progressBar->setTextVisible(false);
+  progressBar->setFixedHeight(10);
+
+  auto* buttons = new QDialogButtonBox(&dialog);
+
+  root->addWidget(titleLabel);
+  root->addWidget(detailLabel);
+  root->addWidget(progressBar);
+  root->addWidget(buttons);
+
+  dialog.show();
   qApp->processEvents();
 
   QNetworkAccessManager networkManager;
@@ -1550,11 +1594,13 @@ void MainWindow::onCheckUpdates() {
   QNetworkReply* reply = networkManager.get(request);
 
   QEventLoop loop;
-  QTimer timeoutTimer(this);
+  QTimer timeoutTimer(&dialog);
   timeoutTimer.setSingleShot(true);
   timeoutTimer.setInterval(12000);
+  bool timedOut = false;
 
-  connect(&timeoutTimer, &QTimer::timeout, this, [reply]() {
+  connect(&timeoutTimer, &QTimer::timeout, &dialog, [reply, &timedOut]() {
+    timedOut = true;
     if (reply && reply->isRunning()) {
       reply->abort();
     }
@@ -1563,7 +1609,7 @@ void MainWindow::onCheckUpdates() {
 
   timeoutTimer.start();
   loop.exec();
-  checkingDialog.close();
+  progressBar->hide();
 
   const QVariant statusCodeVar = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
   const int statusCode = statusCodeVar.isValid() ? statusCodeVar.toInt() : 0;
@@ -1571,16 +1617,30 @@ void MainWindow::onCheckUpdates() {
   const QNetworkReply::NetworkError replyError = reply->error();
   reply->deleteLater();
 
+  UpdateChoice choice = UpdateChoice::None;
+  auto addDialogButton =
+      [&dialog, buttons, &choice](const QString& text, const UpdateChoice mappedChoice, const QDialogButtonBox::ButtonRole role) {
+        auto* button = buttons->addButton(text, role);
+        QObject::connect(button, &QPushButton::clicked, &dialog, [&dialog, &choice, mappedChoice]() {
+          choice = mappedChoice;
+          dialog.accept();
+        });
+      };
+
   if (replyError != QNetworkReply::NoError) {
     QString message = QStringLiteral("Update check failed. Please try again.");
     if (statusCode == 403) {
       message = QStringLiteral("Update check rate-limited by GitHub. Please retry in a minute.");
     } else if (statusCode >= 500) {
       message = QStringLiteral("GitHub is currently unavailable. Please retry shortly.");
-    } else if (replyError == QNetworkReply::TimeoutError) {
+    } else if (timedOut || replyError == QNetworkReply::TimeoutError) {
       message = QStringLiteral("Update check timed out.");
     }
-    QMessageBox::warning(this, QStringLiteral("Update Check"), message);
+
+    titleLabel->setText(QStringLiteral("Could not check updates"));
+    detailLabel->setText(message);
+    addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+    dialog.exec();
     statusLabel_->setText(message);
     return;
   }
@@ -1589,7 +1649,10 @@ void MainWindow::onCheckUpdates() {
   const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
   if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
     const QString message = QStringLiteral("Received invalid update metadata.");
-    QMessageBox::warning(this, QStringLiteral("Update Check"), message);
+    titleLabel->setText(QStringLiteral("Could not check updates"));
+    detailLabel->setText(message);
+    addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+    dialog.exec();
     statusLabel_->setText(message);
     return;
   }
@@ -1598,11 +1661,13 @@ void MainWindow::onCheckUpdates() {
   const QString latestTag = obj.value(QStringLiteral("tag_name")).toString();
   const QString latestVersion = normalizeVersion(latestTag);
   const QString latestUrl = obj.value(QStringLiteral("html_url")).toString();
-  const QString currentVersion = normalizeVersion(versionString());
 
   if (latestVersion.isEmpty()) {
     const QString message = QStringLiteral("Update metadata is missing a release version.");
-    QMessageBox::warning(this, QStringLiteral("Update Check"), message);
+    titleLabel->setText(QStringLiteral("Could not check updates"));
+    detailLabel->setText(message);
+    addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+    dialog.exec();
     statusLabel_->setText(message);
     return;
   }
@@ -1610,22 +1675,29 @@ void MainWindow::onCheckUpdates() {
   const int versionCmp = compareVersions(currentVersion, latestVersion);
 
   if (versionCmp < 0) {
-    QMessageBox box(this);
-    box.setWindowTitle(QStringLiteral("Update Available"));
-    box.setText(
-        QStringLiteral("%1 %2 is available (you have %3).")
-            .arg(QString::fromUtf8(kAppDisplayName), latestVersion, currentVersion));
-    box.setInformativeText(QStringLiteral("Choose what to do now."));
+    titleLabel->setText(QStringLiteral("Update available"));
+    detailLabel->setText(
+        QStringLiteral("Latest version: %1\nCurrent version: %2\n\nChoose what to do now.")
+            .arg(latestVersion, currentVersion));
+    addDialogButton(QStringLiteral("Update Now"), UpdateChoice::UpdateNow, QDialogButtonBox::AcceptRole);
+    addDialogButton(QStringLiteral("Later"), UpdateChoice::Later, QDialogButtonBox::RejectRole);
+    addDialogButton(QStringLiteral("Restart Now"), UpdateChoice::RestartNow, QDialogButtonBox::ActionRole);
+    dialog.exec();
 
-    auto* openReleaseBtn = box.addButton(QStringLiteral("Open Download Page"), QMessageBox::AcceptRole);
-    auto* laterBtn = box.addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
-    Q_UNUSED(laterBtn);
-
-    box.exec();
-
-    if (box.clickedButton() == openReleaseBtn && !latestUrl.isEmpty()) {
+    if (choice == UpdateChoice::UpdateNow && !latestUrl.isEmpty()) {
       QDesktopServices::openUrl(QUrl(latestUrl));
-      statusLabel_->setText(QStringLiteral("Opened release page for %1.").arg(latestVersion));
+      statusLabel_->setText(
+          QStringLiteral("Opened download page for %1. Install it, then restart QuickQC.")
+              .arg(latestVersion));
+      return;
+    }
+
+    if (choice == UpdateChoice::RestartNow) {
+      if (restartApplication()) {
+        return;
+      }
+      QMessageBox::warning(this, QStringLiteral("Restart"), QStringLiteral("Failed to restart app."));
+      statusLabel_->setText(QStringLiteral("Failed to restart app."));
       return;
     }
 
@@ -1634,19 +1706,22 @@ void MainWindow::onCheckUpdates() {
   }
 
   if (versionCmp == 0) {
-    QMessageBox::information(
-        this,
-        QStringLiteral("Up to Date"),
-        QStringLiteral("You are already using the latest version (%1).").arg(currentVersion));
+    titleLabel->setText(QStringLiteral("You're up to date"));
+    detailLabel->setText(
+        QStringLiteral("Current version: %1\nLatest version: %2")
+            .arg(currentVersion, latestVersion));
+    addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+    dialog.exec();
     statusLabel_->setText(QStringLiteral("Already on latest version (%1).").arg(currentVersion));
     return;
   }
 
-  QMessageBox::information(
-      this,
-      QStringLiteral("Version Check"),
-      QStringLiteral("You are using %1, newer than latest public release %2.")
+  titleLabel->setText(QStringLiteral("Running newer build"));
+  detailLabel->setText(
+      QStringLiteral("Current version: %1\nLatest public release: %2")
           .arg(currentVersion, latestVersion));
+  addDialogButton(QStringLiteral("Close"), UpdateChoice::Close, QDialogButtonBox::RejectRole);
+  dialog.exec();
   statusLabel_->setText(QStringLiteral("Running newer build (%1).").arg(currentVersion));
 }
 
